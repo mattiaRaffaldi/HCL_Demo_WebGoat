@@ -144,6 +144,27 @@ To change the IP address add the following variable to the `WebGoat/webgoat-cont
 server.address=x.x.x.x
 ```
 
+### 4.1 Accesso dalla rete locale
+
+Per usare WebGoat da altri dispositivi sulla stessa rete (non solo localhost):
+
+**Windows (PowerShell):**
+```powershell
+.\start-webgoat-network.ps1
+```
+
+**Windows (CMD):**
+```cmd
+start-webgoat-network.cmd
+```
+
+**Oppure manualmente con variabili d'ambiente:**
+```powershell
+$env:WEBGOAT_HOST="0.0.0.0"; $env:WEBWOLF_HOST="0.0.0.0"; ./mvnw.cmd spring-boot:run
+```
+
+Da altri dispositivi: `http://<TUO_IP>:8080/WebGoat/` (trova il tuo IP con `ipconfig`).
+
 ## 4. Run with custom menu
 
 For specialist only. There is a way to set up WebGoat with a personalized menu. You can leave out some menu categories or individual lessons by setting certain environment variables.

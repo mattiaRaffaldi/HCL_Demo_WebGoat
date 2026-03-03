@@ -1,0 +1,7 @@
+start-webgoat-network.cmd
+start-webgoat-network.ps1
+stop-webgoat.cmd
+stop-webgoat.ps1
+/target
+/.cursor
+/logs
