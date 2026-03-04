@@ -1,7 +1,5 @@
 name: "HCL AppScan SAST - bytecode analysis"
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -47,3 +45,4 @@ jobs:
           asoc_secret: ${{secrets.ASOC_SECRET}}
           application_id: ${{vars.ASOC_APPID}}
           scan_build_outputs: true
+          scan_name: "Bytecode Scan - ${{ github.ref_name }}_${{ github.run_id }}"
