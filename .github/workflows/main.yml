@@ -33,22 +33,15 @@ jobs:
           asoc_key: ${{ secrets.ASOC_KEY }}
           asoc_secret: ${{ secrets.ASOC_SECRET }}
           application_id: ${{ vars.ASOC_APPID }}
-          dynamic_scan_type: "dast"
-          starting_URL: "http://172.16.28.128:8080/WebGoat/"
-
-          # Strongly recommended
+          dynamic_scan_type: dast
+          starting_URL: 'http://172.16.28.128:8080/WebGoat/'
           scan_name: "DAST Scan - http://172.16.28.128:8080/WebGoat/_${{ github.ref_name }}"
-          wait_for_analysis: false
-          wait_for_analysis_timeout_minutes: 120
-          fail_by_severity: false
-          #failure_threshold: "High"
 
           # For local/private targets
-          # network: "private"
-          # presence_id: "${{ secrets.ASOC_PRESENCE_ID }}"
-
+          network: private
+          presence_id: ${{ secrets.ASOC_PRESENCE_ID }}
 
           # Only needed if auth is required by target app
-          login_method: "userpass"
-          login_user: "${{ secrets.DAST_LOGIN_USER }}"
-          login_password: "${{ secrets.DAST_LOGIN_PASSWORD }}"
+          login_method: userpass
+          login_user: ${{ secrets.DAST_LOGIN_USER }}
+          login_password: ${{ secrets.DAST_LOGIN_PASSWORD }}
