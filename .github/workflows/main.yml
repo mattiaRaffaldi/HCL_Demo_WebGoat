@@ -50,7 +50,5 @@ jobs:
 
           # Only needed if auth is required by target app
           login_method: "userpass"
-          login_user: "mattia"
-          login_password: "mattia"
           # login_user: "${{ secrets.DAST_LOGIN_USER }}"
           # login_password: "${{ secrets.DAST_LOGIN_PASSWORD }}"
