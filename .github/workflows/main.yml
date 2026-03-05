@@ -37,7 +37,7 @@ jobs:
           starting_URL: "http://172.16.28.128:8080/WebGoat/"
 
           # Strongly recommended
-          scan_name: "DAST Scan - ${{starting_URL}}_${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
+          scan_name: "DAST Scan - http://172.16.28.128:8080/WebGoat/_${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
           wait_for_analysis: false
           wait_for_analysis_timeout_minutes: 120
           fail_by_severity: false
@@ -50,5 +50,5 @@ jobs:
 
           # Only needed if auth is required by target app
           login_method: "userpass"
-          # login_user: "${{ secrets.DAST_LOGIN_USER }}"
-          # login_password: "${{ secrets.DAST_LOGIN_PASSWORD }}"
+          login_user: "${{ secrets.DAST_LOGIN_USER }}"
+          login_password: "${{ secrets.DAST_LOGIN_PASSWORD }}"
