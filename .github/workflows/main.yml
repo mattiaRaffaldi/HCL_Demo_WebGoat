@@ -9,19 +9,18 @@ permissions:
   contents: read
 
 jobs:
-  # sast_sca:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-  #
-  #     - name: Run AppScan SAST scan
-  #       uses: HCL-TECH-SOFTWARE/appscan-sast-action@v1.0.7
-  #       with:
-  #         asoc_key: ${{ secrets.ASOC_KEY }}
-  #         asoc_secret: ${{ secrets.ASOC_SECRET }}
-  #         application_id: ${{ vars.ASOC_APPID }}
-  #         scan_name: "Source Code Scan - ${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
+  sast_sca:
+    runs-on: ubuntu-latest
+    steps:
+       - name: Checkout
+         uses: actions/checkout@v4
+       - name: Run AppScan SAST scan
+         uses: HCL-TECH-SOFTWARE/appscan-sast-action@v1.0.7
+         with:
+           asoc_key: ${{ secrets.ASOC_KEY }}
+           asoc_secret: ${{ secrets.ASOC_SECRET }}
+           application_id: ${{ vars.ASOC_APPID }}
+           scan_name: "Source Code Scan - ${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
 
   dast:
     runs-on: ubuntu-latest
