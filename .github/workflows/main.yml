@@ -1,23 +1,56 @@
 name: "HCL AppScan SAST - source code"
+
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-   scan:
+  sast_sca:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Run AppScan SAST scan
         uses: HCL-TECH-SOFTWARE/appscan-sast-action@v1.0.7
         with:
-          asoc_key: ${{secrets.ASOC_KEY}}
-          asoc_secret: ${{secrets.ASOC_SECRET}}
-          application_id: ${{vars.ASOC_APPID}}
+          asoc_key: ${{ secrets.ASOC_KEY }}
+          asoc_secret: ${{ secrets.ASOC_SECRET }}
+          application_id: ${{ vars.ASOC_APPID }}
           scan_name: "Source Code Scan - ${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
-          
+
+  dast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: HCL AppScan DAST Analyzer
+        uses: HCL-TECH-SOFTWARE/appscan-dast-action@v1.0.7
+        with:
+          # Required
+          asoc_key: ${{ secrets.ASOC_KEY }}
+          asoc_secret: ${{ secrets.ASOC_SECRET }}
+          application_id: ${{ vars.ASOC_APPID }}
+          dynamic_scan_type: "dast"
+          starting_URL: "http://172.16.28.128:8080/WebGoat/"
+
+          # Strongly recommended
+          scan_name: "DAST Scan - ${{starting_URL}}_${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
+          wait_for_analysis: false
+          wait_for_analysis_timeout_minutes: 120
+          fail_by_severity: false
+          #failure_threshold: "High"
+
+          # For local/private targets
+          # network: "private"
+          # presence_id: "${{ secrets.ASOC_PRESENCE_ID }}"
+
+
+          # Only needed if auth is required by target app
+          login_method: "userpass"
+          login_user: "mattia"
+          login_password: "mattia"
+          # login_user: "${{ secrets.DAST_LOGIN_USER }}"
+          # login_password: "${{ secrets.DAST_LOGIN_PASSWORD }}"
