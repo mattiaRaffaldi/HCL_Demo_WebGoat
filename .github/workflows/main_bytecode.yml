@@ -41,8 +41,8 @@ jobs:
       - name: Run AppScan SAST Scan
         uses: HCL-TECH-SOFTWARE/appscan-sast-action@v1.0.7
         with:
-          asoc_key: ${{secrets.ASOC_KEY}}
-          asoc_secret: ${{secrets.ASOC_SECRET}}
-          application_id: ${{vars.ASOC_APPID}}
+          asoc_key: ${{secrets.ASOC_KEY_RAPIDFIX}}
+          asoc_secret: ${{secrets.ASOC_SECRET_RAPIDFIX}}
+          application_id: ${{vars.ASOC_APPID_RAPIDFIX}}
           scan_build_outputs: true
           scan_name: "Bytecode Scan - ${{ github.ref_name }}_${{ github.run_id }}"
