@@ -20,6 +20,7 @@ jobs:
            asoc_key: ${{ secrets.ASOC_KEY }}
            asoc_secret: ${{ secrets.ASOC_SECRET }}
            application_id: ${{ vars.ASOC_APPID }}
+           wait_for_analysis: true
            scan_name: "Source Code Scan - ${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
 
   dast:
