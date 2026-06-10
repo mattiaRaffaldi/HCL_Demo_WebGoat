@@ -68,14 +68,19 @@ jobs:
           echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
 
       - name: Wait for completion
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
         run: |
           set -euo pipefail
+          SCAN_ID="${{ steps.queue.outputs.scan_id }}"
           for i in $(seq 1 60); do
-            S="$("$APPSCAN_BIN" get_status -i "${{ steps.queue.outputs.scan_id }}" | tr -d '\r')"
+            S="$(curl --fail -s "${ASOC_BASE_URL}/api/v4/Scans/${SCAN_ID}" \
+                 -H "X-Api-Key: ${ASOC_KEY}:${ASOC_SECRET}" | jq -r '.LatestExecution.Status')"
             echo "[$i] $S"
             case "$S" in
-              *Ready*|*Complete*) exit 0 ;;
-              *Failed*|*Error*)   echo "::error::scan fallita"; exit 1 ;;
+              Ready)          exit 0 ;;
+              Failed|Stopped) echo "::error::scan $S"; exit 1 ;;
             esac
             sleep 30
           done
