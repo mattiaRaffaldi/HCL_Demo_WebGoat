@@ -1,0 +1,178 @@
+name: "HCL AppScan SAST - SAClientUtil via REST API"
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # NA datacenter: https://cloud.appscan.com  |  EU datacenter: https://eu.cloud.appscan.com
+  ASOC_BASE_URL: "https://cloud.appscan.com"
+  # --- Threshold del security gate ---
+  # Questi valori rappresentano la "policy" che applichi manualmente.
+  # Puoi anche popolarli dinamicamente leggendo la policy dell'app via REST (vedi step "Read app policy").
+  MAX_CRITICAL: "0"
+  MAX_HIGH: "0"
+  MAX_MEDIUM: "10"
+
+jobs:
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+
+      # Build necessaria: il "prepare" analizza i build output (jar/war/ear) presenti in target/
+      - name: Build Maven project
+        run: mvn -B clean package -DskipTests --file pom.xml
+
+      # ============================================================
+      # 1) DOWNLOAD + INSTALL della SAClientUtil tramite REST API
+      # ============================================================
+      - name: Download & install SAClientUtil
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/SAClientUtil"
+          curl --fail --location \
+            "${ASOC_BASE_URL}/api/v4/Tools/SAClientUtilByType?toolType=Linux" \
+            --header "Accept: application/octet-stream" \
+            --output "$HOME/saclient.zip"
+          unzip -q "$HOME/saclient.zip" -d "$HOME/SAClientUtil"
+          # La zip estrae una cartella tipo "SAClientUtil.8.0.xxxx": normalizziamo il path
+          CLIENT_DIR="$(find "$HOME/SAClientUtil" -maxdepth 1 -type d -name 'SAClientUtil*' | head -n1)"
+          chmod +x "${CLIENT_DIR}/bin/appscan.sh"
+          echo "APPSCAN_BIN=${CLIENT_DIR}/bin/appscan.sh" >> "$GITHUB_ENV"
+
+      - name: AppScan login (CLI)
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+        run: |
+          set -euo pipefail
+          "$APPSCAN_BIN" api_login -u "$ASOC_KEY" -P "$ASOC_SECRET" -persist
+          "$APPSCAN_BIN" version
+
+      # ============================================================
+      # 2) SAST: genera IRX e invia l'analisi (al posto del plugin)
+      # ============================================================
+      - name: Prepare IRX
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/irx"
+          "$APPSCAN_BIN" prepare \
+            -d "$GITHUB_WORKSPACE/irx" \
+            -n "webgoat_${{ github.run_id }}" \
+            -v
+
+      - name: Queue SAST analysis
+        id: queue
+        env:
+          ASOC_APPID: ${{ vars.ASOC_APPID }}
+        run: |
+          set -euo pipefail
+          IRX_FILE="$(find "$GITHUB_WORKSPACE/irx" -name '*.irx' | head -n1)"
+          echo "IRX: $IRX_FILE"
+          # -sao = solo SAST (static analysis only). Rimuovi -sao per SAST+SCA, usa -os per sola SCA.
+          OUT="$("$APPSCAN_BIN" queue_analysis \
+                  -a "$ASOC_APPID" \
+                  -f "$IRX_FILE" \
+                  -sao \
+                  -n "Source Code Scan - ${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}")"
+          echo "$OUT"
+          # Lo scan id è restituito nell'output. Su ASoC è un UUID: lo estraiamo.
+          # >> VERIFICA il formato dell'output del TUO tenant e adatta la regex se necessario <<
+          SCAN_ID="$(echo "$OUT" | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n1)"
+          if [ -z "$SCAN_ID" ]; then echo "::error::Scan ID non trovato nell'output di queue_analysis"; exit 1; fi
+          echo "scan_id=${SCAN_ID}" >> "$GITHUB_OUTPUT"
+          echo "Scan ID: ${SCAN_ID}"
+
+      - name: Wait for analysis to complete
+        run: |
+          set -euo pipefail
+          SCAN_ID="${{ steps.queue.outputs.scan_id }}"
+          for i in $(seq 1 60); do          # max ~60 x 30s = 30 min
+            STATUS="$("$APPSCAN_BIN" get_status -i "$SCAN_ID" | tr -d '\r')"
+            echo "[$i] status: $STATUS"
+            case "$STATUS" in
+              *Ready*|*Complete*) echo "Analisi completata"; exit 0 ;;
+              *Failed*|*Error*)   echo "::error::Scan fallita: $STATUS"; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "::error::Timeout in attesa del completamento dello scan"; exit 1
+
+      # ============================================================
+      # 3) (Opzionale) Leggi la policy dell'app per ricavare i threshold
+      #    Endpoint da confermare sul tuo Swagger (sezione Policies / Apps).
+      # ============================================================
+      - name: Read app policy (info)
+        continue-on-error: true
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+          ASOC_APPID: ${{ vars.ASOC_APPID }}
+        run: |
+          set -euo pipefail
+          # Direct API Key: header X-Api-Key "KeyId:KeySecret" (niente gestione token)
+          curl --fail -s "${ASOC_BASE_URL}/api/v4/Apps/${ASOC_APPID}" \
+            -H "Accept: application/json" \
+            -H "X-Api-Key: ${ASOC_KEY}:${ASOC_SECRET}" | jq '.' || true
+          # Vedi nello Swagger gli endpoint Policies per ottenere i threshold associati all'app.
+
+      # ============================================================
+      # 4) SECURITY GATE: conteggio issue dalla scan e confronto con i threshold
+      # ============================================================
+      - name: Security gate
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+        run: |
+          set -euo pipefail
+          SCAN_ID="${{ steps.queue.outputs.scan_id }}"
+          JSON="$(curl --fail -s "${ASOC_BASE_URL}/api/v4/Scans/${SCAN_ID}" \
+                    -H "Accept: application/json" \
+                    -H "X-Api-Key: ${ASOC_KEY}:${ASOC_SECRET}")"
+          echo "$JSON" | jq '.'
+          # >> CONFERMA i nomi dei campi nella risposta del TUO Swagger e adattali <<
+          CRIT="$(echo "$JSON" | jq -r '.LatestExecution.NCriticalIssues // .NCriticalIssues // 0')"
+          HIGH="$(echo "$JSON" | jq -r '.LatestExecution.NHighIssues // .NHighIssues // 0')"
+          MED="$(echo  "$JSON" | jq -r '.LatestExecution.NMediumIssues // .NMediumIssues // 0')"
+          echo "Critical=$CRIT  High=$HIGH  Medium=$MED  (limiti: $MAX_CRITICAL/$MAX_HIGH/$MAX_MEDIUM)"
+          FAIL=0
+          [ "$CRIT" -gt "$MAX_CRITICAL" ] && { echo "::error::Critical $CRIT > $MAX_CRITICAL"; FAIL=1; }
+          [ "$HIGH" -gt "$MAX_HIGH" ]     && { echo "::error::High $HIGH > $MAX_HIGH"; FAIL=1; }
+          [ "$MED"  -gt "$MAX_MEDIUM" ]   && { echo "::error::Medium $MED > $MAX_MEDIUM"; FAIL=1; }
+          if [ "$FAIL" -eq 1 ]; then echo "Security gate NON superato"; exit 1; fi
+          echo "Security gate superato"
+
+      # ============================================================
+      # 5) REPORT come artefatto (generato anche se il gate fallisce)
+      # ============================================================
+      - name: Generate HTML report (with policies)
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/reports"
+          "$APPSCAN_BIN" get_report \
+            -i "${{ steps.queue.outputs.scan_id }}" \
+            -s scan \
+            -f html \
+            -d "$GITHUB_WORKSPACE/reports/appscan-sast-report.html" \
+            -applyPolicies
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appscan-sast-report
+          path: reports/
