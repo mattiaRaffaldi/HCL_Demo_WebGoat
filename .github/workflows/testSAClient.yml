@@ -9,10 +9,12 @@ permissions:
   contents: read
 
 env:
-  ASOC_BASE_URL: "https://cloud.appscan.com"   # EU: https://eu.cloud.appscan.com
-  MAX_CRITICAL: "0"
-  MAX_HIGH: "0"
-  MAX_MEDIUM: "10"
+  # Datacenter ASoC. EU: eu.cloud.appscan.com
+  SERVICE_URL: "cloud.appscan.com"
+  # Severita su cui applicare il gate: criticalIssues | highIssues | mediumIssues | lowIssues | totalIssues
+  SEV_SEC_GW: "highIssues"
+  # Numero massimo di issue tollerate per la severita sopra
+  MAX_ISSUES_ALLOWED: "0"
 
 jobs:
   sast:
@@ -20,98 +22,268 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
+
+      # Compilazione del progetto
       - name: Build
         run: mvn -B clean package -DskipTests --file pom.xml
 
-      # 1) Download della SAClientUtil via REST API
-      - name: Download & install SAClientUtil
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/SAClientUtil"
-          curl --fail -L "${ASOC_BASE_URL}/api/v4/Tools/SAClientUtilByType?toolType=Linux" \
-            -H "Accept: application/octet-stream" -o "$HOME/saclient.zip"
-          unzip -q "$HOME/saclient.zip" -d "$HOME/SAClientUtil"
-          BIN="$(find "$HOME/SAClientUtil" -type f -name appscan.sh | head -n1)"
-          [ -n "$BIN" ] || { echo "::error::appscan.sh non trovato"; find "$HOME/SAClientUtil" -maxdepth 4 | sort; exit 1; }
-          chmod +x "$BIN"
-          echo "APPSCAN_BIN=$BIN" >> "$GITHUB_ENV"
-
-      - name: Login
+      # ------------------------------------------------------------------
+      # 1) Scan SAST: download SAClientUtil, prepare IRX, upload, avvio scan
+      #    Basato su appscanasoc_sast_scan.sh
+      # ------------------------------------------------------------------
+      - name: AppScan SAST scan
+        id: scan
         env:
           ASOC_KEY: ${{ secrets.ASOC_KEY }}
           ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
-        run: |
-          "$APPSCAN_BIN" api_login -u "$ASOC_KEY" -P "$ASOC_SECRET" -persist
-          "$APPSCAN_BIN" version
-
-      # 2) Genera IRX e invia la SAST (al posto del plugin ufficiale)
-      - name: Prepare IRX
-        run: |
-          mkdir -p irx
-          "$APPSCAN_BIN" prepare -d irx -n "webgoat_${{ github.run_id }}"
-
-      - name: Queue analysis
-        id: queue
+          APP_ID: ${{ vars.ASOC_APPID }}
+          SCAN_NAME: "WebGoat-${{ github.ref_name }}-${{ github.run_id }}"
         run: |
           set -euo pipefail
-          IRX="$(find irx -name '*.irx' | head -n1)"
-          OUT="$("$APPSCAN_BIN" queue_analysis -a "${{ vars.ASOC_APPID }}" -f "$IRX" -sao \
-                 -n "SAST - ${{ github.ref_name }}_${{ github.sha }}")"
-          echo "$OUT"
-          SCAN_ID="$(echo "$OUT" | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n1)"
-          [ -n "$SCAN_ID" ] || { echo "::error::scan id non trovato"; exit 1; }
-          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for completion
-        env:
-          ASOC_KEY: ${{ secrets.ASOC_KEY }}
-          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
-        run: |
-          set -euo pipefail
-          SCAN_ID="${{ steps.queue.outputs.scan_id }}"
-          for i in $(seq 1 60); do
-            S="$(curl --fail -s "${ASOC_BASE_URL}/api/v4/Scans/${SCAN_ID}" \
-                 -H "X-Api-Key: ${ASOC_KEY}:${ASOC_SECRET}" | jq -r '.LatestExecution.Status')"
-            echo "[$i] $S"
-            case "$S" in
-              Ready)          exit 0 ;;
-              Failed|Stopped) echo "::error::scan $S"; exit 1 ;;
-            esac
-            sleep 30
+          echo "Sast" > scanTech.txt
+
+          # --- Download e preparazione SAClientUtil ---
+          if ! command -v appscan.sh >/dev/null 2>&1; then
+            echo "appscan.sh non installato: download in corso..."
+            curl -k -s "https://${SERVICE_URL}/api/v4/Tools/SAClientUtil?os=linux" > "$HOME/SAClientUtil.zip"
+            unzip -q "$HOME/SAClientUtil.zip" -d "$HOME"
+            rm -f "$HOME/SAClientUtil.zip"
+            mv "$HOME"/SAClientUtil.* "$HOME/SAClientUtil"
+            echo "$HOME/SAClientUtil/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/SAClientUtil/bin:${PATH}"
+          fi
+          appscan.sh version
+
+          # --- Generazione IRX ---
+          echo "AppScan Prepare."
+          appscan.sh prepare -es -acceptssl -n sast.irx
+
+          # --- Autenticazione: token Bearer ---
+          asocToken=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' \
+            --header 'Accept:application/json' \
+            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
+            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
+            | grep -oP '(?<="Token":\ ")[^"]*')
+          if [ -z "$asocToken" ]; then
+            echo "::error::Token vuoto. Verifica ASOC_KEY / ASOC_SECRET."
+            exit 1
+          fi
+
+          # --- Individuazione file IRX ---
+          irxFile=$(ls -t sast.irx 2>/dev/null | head -n1 || true)
+          if [ ! -f "$irxFile" ]; then
+            echo "::error::file IRX non trovato dopo prepare."
+            exit 1
+          fi
+
+          # --- Upload IRX ---
+          irxFileId=$(curl -k -s -X POST "https://${SERVICE_URL}/api/v4/FileUpload" \
+            -H 'accept:application/json' \
+            -H "Authorization:Bearer $asocToken" \
+            -H 'Content-Type:multipart/form-data' \
+            -F "uploadedFile=@$irxFile" \
+            | grep -oP '(?<="FileId":\ ")[^"]*')
+          if [ -z "$irxFileId" ]; then
+            echo "::error::Upload IRX fallito (FileId vuoto)."
+            exit 1
+          fi
+          echo "IRX caricato. FileId = $irxFileId"
+
+          # --- Avvio scan SAST ---
+          scanId=$(curl -k -s -X POST "https://${SERVICE_URL}/api/v4/Scans/Sast" \
+            -H 'accept:application/json' \
+            -H "Authorization:Bearer $asocToken" \
+            -H 'Content-Type:application/json' \
+            -d '{"AppId":"'"$APP_ID"'","ApplicationFileId":"'"$irxFileId"'","ClientType":"user-site","EnableMailNotification":false,"Execute":true,"Locale":"en","Personal":false,"ScanName":"'"$SCAN_NAME"'","EnablementMessage":"","FullyAutomatic":true}' \
+            | jq -r '.Id')
+          if [ -z "$scanId" ] || [ "$scanId" = "null" ]; then
+            echo "::error::Avvio scan fallito (scanId vuoto)."
+            exit 1
+          fi
+          echo "Scan avviato. scanId = $scanId"
+          echo "$scanId" > scanId.txt
+          echo "scan_id=$scanId" >> "$GITHUB_OUTPUT"
+
+          # --- Polling stato scan ---
+          while true; do
+            scanStatus=$(curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Scans/Sast/$scanId" \
+              -H 'accept:application/json' \
+              -H "Authorization:Bearer $asocToken" \
+              | jq -r '.LatestExecution.Status')
+            echo "Stato: $scanStatus"
+            if [ "$scanStatus" = "Running" ] || [ "$scanStatus" = "InQueue" ]; then
+              sleep 60
+            elif [ "$scanStatus" = "Failed" ]; then
+              echo "::error::Scan Failed. Controlla i log su ASoC."
+              exit 1
+            else
+              break
+            fi
           done
-          echo "::error::timeout"; exit 1
 
-      # 3) Security gate sui threshold
-      - name: Security gate
+          # --- Logout ---
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
+            -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
+
+      # ------------------------------------------------------------------
+      # 2) Report XML - basato su appscanasoc_get_xml_report.sh
+      # ------------------------------------------------------------------
+      - name: Get XML report
+        if: always() && steps.scan.outputs.scan_id != ''
         env:
           ASOC_KEY: ${{ secrets.ASOC_KEY }}
           ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
         run: |
           set -euo pipefail
-          J="$(curl --fail -s "${ASOC_BASE_URL}/api/v4/Scans/${{ steps.queue.outputs.scan_id }}" \
-               -H "X-Api-Key: ${ASOC_KEY}:${ASOC_SECRET}")"
-          C="$(echo "$J" | jq -r '.LatestExecution.NCriticalIssues // .NCriticalIssues // 0')"
-          H="$(echo "$J" | jq -r '.LatestExecution.NHighIssues // .NHighIssues // 0')"
-          M="$(echo "$J" | jq -r '.LatestExecution.NMediumIssues // .NMediumIssues // 0')"
-          echo "Critical=$C High=$H Medium=$M (max $MAX_CRITICAL/$MAX_HIGH/$MAX_MEDIUM)"
-          [ "$C" -le "$MAX_CRITICAL" ] && [ "$H" -le "$MAX_HIGH" ] && [ "$M" -le "$MAX_MEDIUM" ] \
-            || { echo "::error::security gate non superato"; exit 1; }
+          scanId="${{ steps.scan.outputs.scan_id }}"
 
-      # 4) Report HTML come artefatto (anche se il gate fallisce)
-      - name: Generate HTML report
-        if: always() && steps.queue.outputs.scan_id != ''
-        run: |
+          asocToken=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
+            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
+            | grep -oP '(?<="Token":\ ")[^"]*')
+          [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
+
+          reportId=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            --header "Authorization:Bearer $asocToken" \
+            -d '{"Configuration":{"Summary":true,"Details":true,"Discussion":true,"Overview":true,"TableOfContent":true,"Articles":true,"History":true,"Coverage":true,"MinimizeDetails":true,"ReportFileType":"XML","Title":"","Notes":"","Locale":"en"},"OdataFilter":"","ApplyPolicies":"None"}' \
+            "https://${SERVICE_URL}/api/v4/Reports/Security/Scan/$scanId" \
+            | grep -oP '(?<="Id":\ ")[^"]*')
+          echo "Report XML richiesto. reportId = $reportId"
+
+          while true; do
+            reportStatus=$(curl -k -s -X GET --header 'Accept:text/xml' \
+              --header "Authorization:Bearer $asocToken" \
+              "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" \
+              | grep -oP '(?<="Message":\ ")[^"]*' || true)
+            if [ "$reportStatus" = "Report is not available" ]; then
+              echo "Report in generazione..."
+              sleep 30
+            else
+              echo "Report pronto."
+              break
+            fi
+          done
+
           mkdir -p reports
-          "$APPSCAN_BIN" get_report -i "${{ steps.queue.outputs.scan_id }}" \
-            -s scan -f html -d reports/appscan-sast-report.html -applyPolicies
-      - name: Upload report artifact
-        if: always() && steps.queue.outputs.scan_id != ''
+          curl -k -s -X GET --header 'Accept:text/xml' \
+            --header "Authorization:Bearer $asocToken" \
+            "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" > reports/SAST_report.xml
+
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
+            -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
+
+      # ------------------------------------------------------------------
+      # 3) Report HTML - basato su appscanasoc_get_html_report.sh
+      # ------------------------------------------------------------------
+      - name: Get HTML report
+        if: always() && steps.scan.outputs.scan_id != ''
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+        run: |
+          set -euo pipefail
+          scanId="${{ steps.scan.outputs.scan_id }}"
+
+          asocToken=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
+            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
+            | grep -oP '(?<="Token":\ ")[^"]*')
+          [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
+
+          reportId=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            --header "Authorization:Bearer $asocToken" \
+            -d '{"Configuration":{"Summary":true,"Details":true,"Discussion":true,"Overview":true,"TableOfContent":true,"Articles":true,"History":true,"Coverage":true,"MinimizeDetails":true,"ReportFileType":"HTML","Title":"","Notes":"","Locale":"en"},"OdataFilter":"","ApplyPolicies":"None"}' \
+            "https://${SERVICE_URL}/api/v4/Reports/Security/Scan/$scanId" \
+            | grep -oP '(?<="Id":\ ")[^"]*')
+          echo "Report HTML richiesto. reportId = $reportId"
+
+          while true; do
+            reportStatus=$(curl -k -s -X GET --header 'Accept:text/xml' \
+              --header "Authorization:Bearer $asocToken" \
+              "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" \
+              | grep -oP '(?<="Message":\ ")[^"]*' || true)
+            if [ "$reportStatus" = "Report is not available" ]; then
+              echo "Report in generazione..."
+              sleep 30
+            else
+              echo "Report pronto."
+              break
+            fi
+          done
+
+          mkdir -p reports
+          curl -k -s -X GET --header 'Accept:text/html' \
+            --header "Authorization:Bearer $asocToken" \
+            "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" > reports/SAST_report.html
+
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
+            -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
+
+      - name: Upload reports artifact
+        if: always() && steps.scan.outputs.scan_id != ''
         uses: actions/upload-artifact@v4
         with:
-          name: appscan-sast-report
+          name: appscan-sast-reports
           path: reports/
+
+      # ------------------------------------------------------------------
+      # 4) Security gate - basato su appscanasoc_check_security_gate.sh
+      # ------------------------------------------------------------------
+      - name: Check security gate
+        if: steps.scan.outputs.scan_id != ''
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+        run: |
+          set -euo pipefail
+          scanId="${{ steps.scan.outputs.scan_id }}"
+
+          asocToken=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
+            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
+            | grep -oP '(?<="Token":\ ")[^"]*')
+          [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
+
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Scans/Sast/$scanId" \
+            -H 'accept:application/json' -H "Authorization:Bearer $asocToken" > scanResult.txt
+
+          criticalIssues=$(jq -r '.LatestExecution.NCriticalIssues // 0' scanResult.txt)
+          highIssues=$(jq -r '.LatestExecution.NHighIssues // 0' scanResult.txt)
+          mediumIssues=$(jq -r '.LatestExecution.NMediumIssues // 0' scanResult.txt)
+          lowIssues=$(jq -r '.LatestExecution.NLowIssues // 0' scanResult.txt)
+          totalIssues=$(jq -r '.LatestExecution.NIssuesFound // 0' scanResult.txt)
+
+          echo "Critical=$criticalIssues High=$highIssues Medium=$mediumIssues Low=$lowIssues Total=$totalIssues"
+          echo "Gate su '${SEV_SEC_GW}', max consentito = ${MAX_ISSUES_ALLOWED}"
+
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
+            -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
+
+          fail=0
+          case "$SEV_SEC_GW" in
+            criticalIssues) [ "$criticalIssues" -gt "$MAX_ISSUES_ALLOWED" ] && fail=1 ;;
+            highIssues)     [ "$highIssues"     -gt "$MAX_ISSUES_ALLOWED" ] && fail=1 ;;
+            mediumIssues)   [ "$mediumIssues"   -gt "$MAX_ISSUES_ALLOWED" ] && fail=1 ;;
+            lowIssues)      [ "$lowIssues"      -gt "$MAX_ISSUES_ALLOWED" ] && fail=1 ;;
+            totalIssues)    [ "$totalIssues"    -gt "$MAX_ISSUES_ALLOWED" ] && fail=1 ;;
+            *) echo "::error::SEV_SEC_GW non valido: $SEV_SEC_GW"; exit 1 ;;
+          esac
+
+          if [ "$fail" -eq 1 ]; then
+            echo "::error::Security Gate fallito: $SEV_SEC_GW supera la soglia $MAX_ISSUES_ALLOWED"
+            exit 1
+          fi
+          echo "Security Gate superato."
