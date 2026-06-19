@@ -187,14 +187,21 @@ jobs:
 
           mkdir -p sarif
           curl -k -s -X GET --header "Authorization:Bearer $asocToken" \
-            "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" -o "sarif/appscan-sast.sarif"
+            "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" -o "sarif/appscan-sast.raw.sarif"
 
           # Validazione minima: deve essere un JSON SARIF valido
-          if ! jq -e '.version and .runs' sarif/appscan-sast.sarif >/dev/null 2>&1; then
+          if ! jq -e '.version and .runs' sarif/appscan-sast.raw.sarif >/dev/null 2>&1; then
             echo "::error::Il file scaricato non sembra un SARIF valido."
-            head -c 500 sarif/appscan-sast.sarif || true
+            head -c 500 sarif/appscan-sast.raw.sarif || true
             exit 1
           fi
+
+          # AppScan esporta il SARIF con un BOM UTF-8 (U+FEFF) in testa, che il parser
+          # SARIF di GitHub rifiuta ("Unexpected token"). jq lo legge comunque e lo
+          # riscrive pulito, senza BOM: questo normalizza il file per l'upload.
+          jq '.' sarif/appscan-sast.raw.sarif > sarif/appscan-sast.sarif
+          rm -f sarif/appscan-sast.raw.sarif
+
           echo "sarif_path=sarif/appscan-sast.sarif" >> "$GITHUB_OUTPUT"
 
           curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
@@ -205,7 +212,7 @@ jobs:
       # ------------------------------------------------------------------
       - name: Upload SARIF to Code scanning (T1)
         if: steps.sarif.outputs.sarif_path != ''
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ steps.sarif.outputs.sarif_path }}
           category: appscan-sast
@@ -222,3 +229,4 @@ jobs:
           path: |
             reports/
             sarif/
+          
