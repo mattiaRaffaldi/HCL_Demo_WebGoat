@@ -1,0 +1,224 @@
+name: "HCL AppScan SAST - SARIF su Code Scanning (T1)"
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# T1: 'security-events: write' serve per pubblicare il SARIF nella tab
+#     Security -> Code scanning. 'contents: read' resta per il checkout.
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  # Datacenter ASoC. EU: eu.cloud.appscan.com
+  SERVICE_URL: "cloud.appscan.com"
+  # Formato del report "umano" di T0: HTML | XML | PDF | CSV
+  REPORT_FILE_TYPE: "HTML"
+
+jobs:
+  sast:
+    name: AppScan SAST (SAClientUtil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build
+        run: mvn -B clean package -DskipTests --file pom.xml
+
+      # ------------------------------------------------------------------
+      # 1) Scan SAST: download SAClientUtil, prepare IRX, upload, avvio scan
+      # ------------------------------------------------------------------
+      - name: AppScan SAST scan
+        id: scan
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+          APP_ID: ${{ vars.ASOC_APPID }}
+          SCAN_NAME: "WebGoat-${{ github.ref_name }}-${{ github.run_id }}"
+        run: |
+          set -euo pipefail
+
+          if ! command -v appscan.sh >/dev/null 2>&1; then
+            echo "appscan.sh non installato: download in corso..."
+            curl -k -s "https://${SERVICE_URL}/api/v4/Tools/SAClientUtil?os=linux" > "$HOME/SAClientUtil.zip"
+            unzip -q "$HOME/SAClientUtil.zip" -d "$HOME"
+            rm -f "$HOME/SAClientUtil.zip"
+            mv "$HOME"/SAClientUtil.* "$HOME/SAClientUtil"
+            echo "$HOME/SAClientUtil/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/SAClientUtil/bin:${PATH}"
+          fi
+          appscan.sh version
+
+          echo "AppScan Prepare."
+          appscan.sh prepare -es -acceptssl -n sast.irx
+
+          asocToken=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
+            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
+            | grep -oP '(?<="Token":\ ")[^"]*')
+          [ -n "$asocToken" ] || { echo "::error::Token vuoto. Verifica ASOC_KEY / ASOC_SECRET."; exit 1; }
+
+          irxFile=$(ls -t sast.irx 2>/dev/null | head -n1 || true)
+          [ -f "$irxFile" ] || { echo "::error::file IRX non trovato dopo prepare."; exit 1; }
+
+          irxFileId=$(curl -k -s -X POST "https://${SERVICE_URL}/api/v4/FileUpload" \
+            -H 'accept:application/json' -H "Authorization:Bearer $asocToken" \
+            -H 'Content-Type:multipart/form-data' -F "uploadedFile=@$irxFile" \
+            | grep -oP '(?<="FileId":\ ")[^"]*')
+          [ -n "$irxFileId" ] || { echo "::error::Upload IRX fallito (FileId vuoto)."; exit 1; }
+          echo "IRX caricato. FileId = $irxFileId"
+
+          scanId=$(curl -k -s -X POST "https://${SERVICE_URL}/api/v4/Scans/Sast" \
+            -H 'accept:application/json' -H "Authorization:Bearer $asocToken" \
+            -H 'Content-Type:application/json' \
+            -d '{"AppId":"'"$APP_ID"'","ApplicationFileId":"'"$irxFileId"'","ClientType":"user-site","EnableMailNotification":false,"Execute":true,"Locale":"en","Personal":false,"ScanName":"'"$SCAN_NAME"'","EnablementMessage":"","FullyAutomatic":true}' \
+            | jq -r '.Id')
+          [ -n "$scanId" ] && [ "$scanId" != "null" ] || { echo "::error::Avvio scan fallito (scanId vuoto)."; exit 1; }
+          echo "Scan avviato. scanId = $scanId"
+          echo "scan_id=$scanId" >> "$GITHUB_OUTPUT"
+
+          while true; do
+            scanStatus=$(curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Scans/Sast/$scanId" \
+              -H 'accept:application/json' -H "Authorization:Bearer $asocToken" \
+              | jq -r '.LatestExecution.Status')
+            echo "Stato: $scanStatus"
+            if [ "$scanStatus" = "Running" ] || [ "$scanStatus" = "InQueue" ]; then
+              sleep 60
+            elif [ "$scanStatus" = "Failed" ]; then
+              echo "::error::Scan Failed. Controlla i log su ASoC."; exit 1
+            else
+              break
+            fi
+          done
+
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
+            -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
+
+      # ------------------------------------------------------------------
+      # 2) T0 - Report leggibile come artefatto (invariato)
+      # ------------------------------------------------------------------
+      - name: Get scan report (T0)
+        if: always() && steps.scan.outputs.scan_id != ''
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+        run: |
+          set -euo pipefail
+          scanId="${{ steps.scan.outputs.scan_id }}"
+
+          asocToken=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
+            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
+            | grep -oP '(?<="Token":\ ")[^"]*')
+          [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
+
+          reportId=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            --header "Authorization:Bearer $asocToken" \
+            -d '{"Configuration":{"Summary":true,"Details":true,"Discussion":true,"Overview":true,"TableOfContent":true,"Articles":true,"History":true,"Coverage":true,"MinimizeDetails":true,"ReportFileType":"'"$REPORT_FILE_TYPE"'","Title":"","Notes":"","Locale":"en"},"OdataFilter":"","ApplyPolicies":"None"}' \
+            "https://${SERVICE_URL}/api/v4/Reports/Security/Scan/$scanId" \
+            | grep -oP '(?<="Id":\ ")[^"]*')
+          [ -n "$reportId" ] || { echo "::error::Creazione report fallita."; exit 1; }
+
+          while true; do
+            reportStatus=$(curl -k -s -X GET --header 'Accept:text/xml' \
+              --header "Authorization:Bearer $asocToken" \
+              "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" \
+              | grep -oP '(?<="Message":\ ")[^"]*' || true)
+            [ "$reportStatus" = "Report is not available" ] && { echo "Report in generazione..."; sleep 30; } || { echo "Report pronto."; break; }
+          done
+
+          mkdir -p reports
+          ext=$(echo "$REPORT_FILE_TYPE" | tr '[:upper:]' '[:lower:]')
+          curl -k -s -X GET --header "Authorization:Bearer $asocToken" \
+            "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" -o "reports/SAST_report.${ext}"
+
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
+            -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
+
+      # ------------------------------------------------------------------
+      # 3) T1 - Report SARIF (SAST) per la tab Code scanning
+      #    SARIF nativo ASoC = solo SAST. Niente conversione custom.
+      # ------------------------------------------------------------------
+      - name: Get SARIF report (T1)
+        id: sarif
+        if: steps.scan.outputs.scan_id != ''
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+        run: |
+          set -euo pipefail
+          scanId="${{ steps.scan.outputs.scan_id }}"
+
+          asocToken=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
+            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
+            | grep -oP '(?<="Token":\ ")[^"]*')
+          [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
+
+          # Reports_Create con ReportFileType = SARIF
+          reportId=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            --header "Authorization:Bearer $asocToken" \
+            -d '{"Configuration":{"Summary":true,"Details":true,"Discussion":true,"Overview":true,"TableOfContent":true,"Articles":true,"History":true,"Coverage":true,"MinimizeDetails":true,"ReportFileType":"SARIF","Title":"","Notes":"","Locale":"en"},"OdataFilter":"","ApplyPolicies":"None"}' \
+            "https://${SERVICE_URL}/api/v4/Reports/Security/Scan/$scanId" \
+            | grep -oP '(?<="Id":\ ")[^"]*')
+          [ -n "$reportId" ] || { echo "::error::Creazione report SARIF fallita. Verifica che il piano ASoC non sia Free."; exit 1; }
+          echo "Report SARIF richiesto. reportId = $reportId"
+
+          while true; do
+            reportStatus=$(curl -k -s -X GET --header 'Accept:text/xml' \
+              --header "Authorization:Bearer $asocToken" \
+              "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" \
+              | grep -oP '(?<="Message":\ ")[^"]*' || true)
+            [ "$reportStatus" = "Report is not available" ] && { echo "SARIF in generazione..."; sleep 30; } || { echo "SARIF pronto."; break; }
+          done
+
+          mkdir -p sarif
+          curl -k -s -X GET --header "Authorization:Bearer $asocToken" \
+            "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" -o "sarif/appscan-sast.sarif"
+
+          # Validazione minima: deve essere un JSON SARIF valido
+          if ! jq -e '.version and .runs' sarif/appscan-sast.sarif >/dev/null 2>&1; then
+            echo "::error::Il file scaricato non sembra un SARIF valido."
+            head -c 500 sarif/appscan-sast.sarif || true
+            exit 1
+          fi
+          echo "sarif_path=sarif/appscan-sast.sarif" >> "$GITHUB_OUTPUT"
+
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
+            -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
+
+      # ------------------------------------------------------------------
+      # 4) T1 - Pubblicazione su Security -> Code scanning
+      # ------------------------------------------------------------------
+      - name: Upload SARIF to Code scanning (T1)
+        if: steps.sarif.outputs.sarif_path != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.sarif.outputs.sarif_path }}
+          category: appscan-sast
+          # checkout_path: ${{ github.workspace }}   # decommenta se i path nel SARIF non combaciano col repo
+
+      # ------------------------------------------------------------------
+      # Artefatti: report leggibile (T0) + SARIF (T1) sempre scaricabili
+      # ------------------------------------------------------------------
+      - name: Upload artifacts
+        if: always() && steps.scan.outputs.scan_id != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: appscan-sast
+          path: |
+            reports/
+            sarif/
