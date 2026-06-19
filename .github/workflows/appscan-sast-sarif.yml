@@ -196,10 +196,13 @@ jobs:
             exit 1
           fi
 
-          # AppScan esporta il SARIF con un BOM UTF-8 (U+FEFF) in testa, che il parser
-          # SARIF di GitHub rifiuta ("Unexpected token"). jq lo legge comunque e lo
-          # riscrive pulito, senza BOM: questo normalizza il file per l'upload.
-          jq '.' sarif/appscan-sast.raw.sarif > sarif/appscan-sast.sarif
+          # Normalizzazione del SARIF per l'upload su GitHub:
+          #  1) BOM UTF-8 (U+FEFF) in testa al file -> jq lo legge e riscrive pulito.
+          #  2) Il campo 'guid' su ogni result usa un formato GUID non conforme
+          #     allo standard RFC 4122 che GitHub pretende; essendo opzionale, lo
+          #     rimuoviamo da tutti i result (il tracking degli alert resta valido
+          #     via fingerprint/posizione calcolati da GitHub).
+          jq 'del(.runs[].results[]?.guid)' sarif/appscan-sast.raw.sarif > sarif/appscan-sast.sarif
           rm -f sarif/appscan-sast.raw.sarif
 
           echo "sarif_path=sarif/appscan-sast.sarif" >> "$GITHUB_OUTPUT"
@@ -229,4 +232,3 @@ jobs:
           path: |
             reports/
             sarif/
-          
