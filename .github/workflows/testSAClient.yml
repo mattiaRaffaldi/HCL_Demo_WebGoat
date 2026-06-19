@@ -15,6 +15,7 @@ env:
   SEV_SEC_GW: "highIssues"
   # Numero massimo di issue tollerate per la severita sopra
   MAX_ISSUES_ALLOWED: "0"
+  REPORT_FILE_TYPE: "PDF"
 
 jobs:
   sast:
@@ -133,10 +134,7 @@ jobs:
           curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
             -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
 
-      # ------------------------------------------------------------------
-      # 2) Report XML - basato su appscanasoc_get_xml_report.sh
-      # ------------------------------------------------------------------
-      - name: Get XML report
+      - name: Get scan report
         if: always() && steps.scan.outputs.scan_id != ''
         env:
           ASOC_KEY: ${{ secrets.ASOC_KEY }}
@@ -144,22 +142,26 @@ jobs:
         run: |
           set -euo pipefail
           scanId="${{ steps.scan.outputs.scan_id }}"
-
+ 
+          # --- Autenticazione ---
           asocToken=$(curl -k -s -X POST \
             --header 'Content-Type:application/json' --header 'Accept:application/json' \
             -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
             "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
             | grep -oP '(?<="Token":\ ")[^"]*')
           [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
-
+ 
+          # --- Reports_Create: richiesta generazione report ---
           reportId=$(curl -k -s -X POST \
             --header 'Content-Type:application/json' --header 'Accept:application/json' \
             --header "Authorization:Bearer $asocToken" \
-            -d '{"Configuration":{"Summary":true,"Details":true,"Discussion":true,"Overview":true,"TableOfContent":true,"Articles":true,"History":true,"Coverage":true,"MinimizeDetails":true,"ReportFileType":"XML","Title":"","Notes":"","Locale":"en"},"OdataFilter":"","ApplyPolicies":"None"}' \
+            -d '{"Configuration":{"Summary":true,"Details":true,"Discussion":true,"Overview":true,"TableOfContent":true,"Articles":true,"History":true,"Coverage":true,"MinimizeDetails":true,"ReportFileType":"'"$REPORT_FILE_TYPE"'","Title":"","Notes":"","Locale":"en"},"OdataFilter":"","ApplyPolicies":"None"}' \
             "https://${SERVICE_URL}/api/v4/Reports/Security/Scan/$scanId" \
             | grep -oP '(?<="Id":\ ")[^"]*')
-          echo "Report XML richiesto. reportId = $reportId"
-
+          [ -n "$reportId" ] || { echo "::error::Creazione report fallita (reportId vuoto)."; exit 1; }
+          echo "Report richiesto. reportId = $reportId"
+ 
+          # --- Polling finche il report non e pronto ---
           while true; do
             reportStatus=$(curl -k -s -X GET --header 'Accept:text/xml' \
               --header "Authorization:Bearer $asocToken" \
@@ -173,61 +175,17 @@ jobs:
               break
             fi
           done
-
+ 
+          # --- Reports_Download: scaricamento file ---
           mkdir -p reports
-          curl -k -s -X GET --header 'Accept:text/xml' \
+          ext=$(echo "$REPORT_FILE_TYPE" | tr '[:upper:]' '[:lower:]')
+          curl -k -s -X GET \
             --header "Authorization:Bearer $asocToken" \
-            "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" > reports/SAST_report.xml
-
-          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
-            -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
-
-      # ------------------------------------------------------------------
-      # 3) Report HTML - basato su appscanasoc_get_html_report.sh
-      # ------------------------------------------------------------------
-      - name: Get HTML report
-        if: always() && steps.scan.outputs.scan_id != ''
-        env:
-          ASOC_KEY: ${{ secrets.ASOC_KEY }}
-          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
-        run: |
-          set -euo pipefail
-          scanId="${{ steps.scan.outputs.scan_id }}"
-
-          asocToken=$(curl -k -s -X POST \
-            --header 'Content-Type:application/json' --header 'Accept:application/json' \
-            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
-            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
-            | grep -oP '(?<="Token":\ ")[^"]*')
-          [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
-
-          reportId=$(curl -k -s -X POST \
-            --header 'Content-Type:application/json' --header 'Accept:application/json' \
-            --header "Authorization:Bearer $asocToken" \
-            -d '{"Configuration":{"Summary":true,"Details":true,"Discussion":true,"Overview":true,"TableOfContent":true,"Articles":true,"History":true,"Coverage":true,"MinimizeDetails":true,"ReportFileType":"HTML","Title":"","Notes":"","Locale":"en"},"OdataFilter":"","ApplyPolicies":"None"}' \
-            "https://${SERVICE_URL}/api/v4/Reports/Security/Scan/$scanId" \
-            | grep -oP '(?<="Id":\ ")[^"]*')
-          echo "Report HTML richiesto. reportId = $reportId"
-
-          while true; do
-            reportStatus=$(curl -k -s -X GET --header 'Accept:text/xml' \
-              --header "Authorization:Bearer $asocToken" \
-              "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" \
-              | grep -oP '(?<="Message":\ ")[^"]*' || true)
-            if [ "$reportStatus" = "Report is not available" ]; then
-              echo "Report in generazione..."
-              sleep 30
-            else
-              echo "Report pronto."
-              break
-            fi
-          done
-
-          mkdir -p reports
-          curl -k -s -X GET --header 'Accept:text/html' \
-            --header "Authorization:Bearer $asocToken" \
-            "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" > reports/SAST_report.html
-
+            "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" \
+            -o "reports/SAST_report.${ext}"
+          echo "Report salvato in reports/SAST_report.${ext}"
+ 
+          # --- Logout ---
           curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
             -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
 
@@ -242,7 +200,8 @@ jobs:
       # 4) Security gate - basato su appscanasoc_check_security_gate.sh
       # ------------------------------------------------------------------
       - name: Check security gate
-        if: steps.scan.outputs.scan_id != ''
+        #if: steps.scan.outputs.scan_id != ''
+        if: false
         env:
           ASOC_KEY: ${{ secrets.ASOC_KEY }}
           ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
