@@ -82,20 +82,6 @@ jobs:
           echo "sast_id=$sast_id" >> "$GITHUB_OUTPUT"
           echo "sca_id=$sca_id"  >> "$GITHUB_OUTPUT"
 
-          # Dump diagnostico di un campione di issue SCA (endpoint tentativo: da confermare).
-          # Serve a leggere i nomi reali dei campi (pacchetto, versione, CVE, severita)
-          # su cui scriveremo il convertitore JSON->SARIF in T2b. Non fatale.
-          if [ -n "$sca_id" ]; then
-            echo "=== Tentativo fetch issue SCA (diagnostico) ==="
-            code=$(curl -k -s -o diag/sca-issues.json -w '%{http_code}' -X GET \
-              "https://${SERVICE_URL}/api/v4/Issues/Scan/${sca_id}" \
-              -H 'Accept:application/json' -H "Authorization:Bearer $asocToken" || true)
-            echo "HTTP $code da /api/v4/Issues/Scan/{scaId}"
-            echo "Prime righe della risposta:"
-            head -c 1200 diag/sca-issues.json || true
-            echo ""
-          fi
-
           curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
             -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
 
@@ -165,6 +151,105 @@ jobs:
         with:
           sarif_file: ${{ steps.sarif.outputs.sarif_path }}
           category: appscan-sast
+
+      # ------------------------------------------------------------------
+      # T2b) SCA: issue JSON -> SARIF custom (jq inline) -> Code scanning
+      #      SARIF nativo ASoC e' SAST-only, quindi convertiamo noi le issue SCA
+      #      (endpoint /api/v4/Issues/Scan/{scaId}) direttamente con jq, nello step.
+      # ------------------------------------------------------------------
+      - name: Get SCA issues + convert to SARIF
+        id: sca
+        if: steps.discover.outputs.sca_id != ''
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+        run: |
+          set -euo pipefail
+          scaId="${{ steps.discover.outputs.sca_id }}"
+
+          asocToken=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
+            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
+            | grep -oP '(?<="Token":\ ")[^"]*')
+          [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
+
+          mkdir -p sarif diag
+          # Issue SCA in JSON (per questa app le 73 issue rientrano in una sola risposta)
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Issues/Scan/${scaId}" \
+            -H 'Accept:application/json' -H "Authorization:Bearer $asocToken" \
+            -o diag/sca-issues.json
+
+          if ! jq -e '.Items' diag/sca-issues.json >/dev/null 2>&1; then
+            echo "::error::Risposta issue SCA inattesa."; head -c 500 diag/sca-issues.json || true; exit 1
+          fi
+
+          # Conversione JSON -> SARIF in jq puro (nessuno script esterno).
+          # - una regola per CVE (unique_by .id), severita -> level SARIF
+          # - security-severity dal CVSS (usato da GitHub per ordinare la gravita)
+          # - ancoraggio a pom.xml; fingerprint = AsmHash (stabile e distinto per issue)
+          jq '
+            {"Critical":"error","High":"error","Medium":"warning","Low":"note","Information":"note"} as $lvl
+            | {
+                "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+                version: "2.1.0",
+                runs: [ {
+                  tool: { driver: {
+                    name: "HCL AppScan SCA",
+                    informationUri: "https://www.hcl-software.com/appscan",
+                    rules: ( [ .Items[] | {
+                                id: (.Cve // .CveId // .Id // "UNKNOWN"),
+                                cvss: ((.Cvss // "0") | tostring),
+                                cwe: .Cwe,
+                                url: (.DetailsUrl // "")
+                              } ]
+                             | unique_by(.id)
+                             | map( {
+                                 id: .id,
+                                 name: "OpenSourceVulnerability",
+                                 shortDescription: { text: (.id + " in open-source dependency") },
+                                 properties: {
+                                   "security-severity": .cvss,
+                                   tags: ( ["security","sca"] + (if .cwe != null then ["external/cwe/cwe-" + (.cwe|tostring)] else [] end) )
+                                 }
+                               }
+                               + (if .url != "" then { helpUri: .url, help: { text: ("Advisory: " + .url) } } else {} end) ) )
+                  } },
+                  results: [ .Items[] | {
+                    ruleId: (.Cve // .CveId // .Id // "UNKNOWN"),
+                    level: ($lvl[.Severity] // "warning"),
+                    message: { text: (
+                        (.LibraryName // "?") + " " + (.LibraryVersion // "?")
+                        + " is affected by " + (.Cve // .CveId // "?")
+                        + " (CVSS " + ((.Cvss // "0")|tostring)
+                        + (if .Cwe != null then ", CWE-" + (.Cwe|tostring) else "" end) + ")."
+                        + (if .LatestReleaseVersion != null then " Recommended fix: upgrade to " + .LatestReleaseVersion + "." else "" end)
+                        + (if (.DetailsUrl // "") != "" then " Details: " + .DetailsUrl else "" end)
+                    ) },
+                    locations: [ { physicalLocation: {
+                        artifactLocation: { uri: (.Location // .SourceFile // "pom.xml") },
+                        region: { startLine: 1 }
+                    } } ],
+                    partialFingerprints: { appscanScaHash: ((.AsmHash // .Id // ((.Cve//"") + ":" + (.LibraryName//"") + ":" + (.LibraryVersion//""))) | tostring) }
+                  } ]
+                } ]
+              }
+          ' diag/sca-issues.json > sarif/appscan-sca.sarif
+
+          if ! jq -e '.version and .runs' sarif/appscan-sca.sarif >/dev/null 2>&1; then
+            echo "::error::SARIF SCA generato non valido."; exit 1
+          fi
+          echo "sca_sarif=sarif/appscan-sca.sarif" >> "$GITHUB_OUTPUT"
+
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
+            -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
+
+      - name: Upload SCA SARIF to Code scanning
+        if: steps.sca.outputs.sca_sarif != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ steps.sca.outputs.sca_sarif }}
+          category: appscan-sca
 
       # ------------------------------------------------------------------
       # 4) Artefatto diagnostico: lista scansioni + campione issue SCA + SARIF
