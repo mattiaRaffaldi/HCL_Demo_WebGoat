@@ -22,30 +22,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # JDK utile all'action quando scan_build_outputs builda il progetto Maven
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: maven
-
       # ------------------------------------------------------------------
       # 1) LANCIO via action ufficiale: esegue SAST + SCA insieme.
-      #    - wait_for_analysis: aspetta che l'analisi finisca (cosi i report sono pronti)
-      #    - fail_for_noncompliance: false -> security gate DISATTIVATO
-      #    Per restringere: static_analysis_only / open_source_only.
+      #    Invocazione allineata al main.yml funzionante:
+      #    - versione v1.0.7 (la v1.0.8 usciva a vuoto in pochi secondi)
+      #    - niente scan_build_outputs: si scansiona il sorgente
+      #    - wait_for_analysis: aspetta che l'analisi finisca
+      #    Il security gate (fail_for_noncompliance) e' OFF per default.
       # ------------------------------------------------------------------
       - name: AppScan scan (SAST + SCA)
-        uses: HCL-TECH-SOFTWARE/appscan-sast-action@v1.0.8
+        uses: HCL-TECH-SOFTWARE/appscan-sast-action@v1.0.9
         with:
           asoc_key: ${{ secrets.ASOC_KEY }}
           asoc_secret: ${{ secrets.ASOC_SECRET }}
           application_id: ${{ vars.ASOC_APPID }}
-          scan_name: ${{ env.SCAN_NAME }}
-          scan_build_outputs: true
           wait_for_analysis: true
-          analysis_timeout_minutes: 30
-          fail_for_noncompliance: false
+          scan_name: ${{ env.SCAN_NAME }}
 
       # ------------------------------------------------------------------
       # 2) RECUPERO scan id per nome + DUMP diagnostico (SAST e SCA).
@@ -68,19 +60,28 @@ jobs:
             | grep -oP '(?<="Token":\ ")[^"]*')
           [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
 
-          # Lista scansioni con quel nome (OData v4: contains). URL-encode con --data-urlencode.
+          # --- DIAGNOSTICA: dump grezzo delle scansioni recenti, SENZA filtro per nome ---
+          # Serve a vedere i nomi reali assegnati dall'action e il campo che indica la tecnologia.
           curl -k -s -G "https://${SERVICE_URL}/api/v4/Scans" \
-            --data-urlencode "\$filter=contains(Name,'${SCAN_NAME}')" \
+            --data-urlencode "\$top=50" \
             --data-urlencode "\$count=true" \
             -H 'Accept:application/json' -H "Authorization:Bearer $asocToken" \
-            > diag/scans.json
+            > diag/scans_all.json
 
-          echo "=== Scansioni trovate (campi chiave) ==="
-          jq '.Items[]? | {Id, Name, Technology, AppScanTech, Method, Technologies}' diag/scans.json || cat diag/scans.json
+          echo "=== Numero totale scansioni visibili (Count) ==="
+          jq -r '.Count // "?"' diag/scans_all.json
+          echo "=== TUTTE le chiavi del primo oggetto scan (per trovare i nomi reali dei campi) ==="
+          jq -r '.Items[0] // {} | keys[]' diag/scans_all.json
+          echo "=== Elenco compatto: Id | Name | possibili campi tecnologia ==="
+          jq -r '.Items[]? | [.Id, .Name, (.Technology//"-"), (.AppScanTech//"-"), (.Method//"-"), (.ScanType//"-"), (.Type//"-"), (.Technologies//"-")] | @tsv' diag/scans_all.json
 
-          # Estrazione best-effort: prova piu nomi di campo per la tecnologia.
-          sast_id=$(jq -r '[.Items[]? | select(((.Technology // .AppScanTech // .Method // "") | ascii_downcase) | test("sast|static"))][0].Id // empty' diag/scans.json)
-          sca_id=$(jq -r '[.Items[]?  | select(((.Technology // .AppScanTech // .Method // "") | ascii_downcase) | test("sca|composition|open"))][0].Id // empty' diag/scans.json)
+          echo "=== Oggetti COMPLETI delle scansioni di QUESTO run (Name contiene '$SCAN_NAME') ==="
+          jq --arg n "$SCAN_NAME" '.Items[]? | select(.Name | test($n; "i"))' diag/scans_all.json
+
+          # Estrazione ristretta alle scansioni del nostro run, poi distinte per tecnologia
+          # (best-effort sui nomi di campo ipotizzati: se vuoti, leggiamo gli oggetti sopra).
+          sast_id=$(jq -r --arg n "$SCAN_NAME" '[.Items[]? | select(.Name | test($n;"i")) | select(((.Technology // .AppScanTech // .Method // .ScanType // .Type // "") | ascii_downcase) | test("sast|static"))][0].Id // empty' diag/scans_all.json)
+          sca_id=$(jq -r --arg n "$SCAN_NAME"  '[.Items[]? | select(.Name | test($n;"i")) | select(((.Technology // .AppScanTech // .Method // .ScanType // .Type // "") | ascii_downcase) | test("sca|composition|open"))][0].Id // empty' diag/scans_all.json)
 
           echo "SAST scan id: ${sast_id:-<non identificato>}"
           echo "SCA  scan id: ${sca_id:-<non identificato>}"
