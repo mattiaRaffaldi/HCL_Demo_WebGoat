@@ -1,0 +1,177 @@
+name: "HCL AppScan SAST+SCA -> Code Scanning (T2)"
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  # Datacenter ASoC. EU: eu.cloud.appscan.com
+  SERVICE_URL: "cloud.appscan.com"
+  # Nome scan univoco per run: serve per ritrovare gli scan id dopo l'action
+  SCAN_NAME: "WebGoat-${{ github.run_id }}"
+
+jobs:
+  scan:
+    name: AppScan SAST+SCA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # JDK utile all'action quando scan_build_outputs builda il progetto Maven
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # ------------------------------------------------------------------
+      # 1) LANCIO via action ufficiale: esegue SAST + SCA insieme.
+      #    - wait_for_analysis: aspetta che l'analisi finisca (cosi i report sono pronti)
+      #    - fail_for_noncompliance: false -> security gate DISATTIVATO
+      #    Per restringere: static_analysis_only / open_source_only.
+      # ------------------------------------------------------------------
+      - name: AppScan scan (SAST + SCA)
+        uses: HCL-TECH-SOFTWARE/appscan-sast-action@v1.0.8
+        with:
+          asoc_key: ${{ secrets.ASOC_KEY }}
+          asoc_secret: ${{ secrets.ASOC_SECRET }}
+          application_id: ${{ vars.ASOC_APPID }}
+          scan_name: ${{ env.SCAN_NAME }}
+          scan_build_outputs: true
+          wait_for_analysis: true
+          analysis_timeout_minutes: 30
+          fail_for_noncompliance: false
+
+      # ------------------------------------------------------------------
+      # 2) RECUPERO scan id per nome + DUMP diagnostico (SAST e SCA).
+      #    Qui isoliamo le due incognite: nome del campo tecnologia e
+      #    forma del JSON delle issue SCA. Tutto viene stampato e salvato.
+      # ------------------------------------------------------------------
+      - name: Discover scan IDs + diagnostics
+        id: discover
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+        run: |
+          set -euo pipefail
+          mkdir -p diag
+
+          asocToken=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
+            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
+            | grep -oP '(?<="Token":\ ")[^"]*')
+          [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
+
+          # Lista scansioni con quel nome (OData v4: contains). URL-encode con --data-urlencode.
+          curl -k -s -G "https://${SERVICE_URL}/api/v4/Scans" \
+            --data-urlencode "\$filter=contains(Name,'${SCAN_NAME}')" \
+            --data-urlencode "\$count=true" \
+            -H 'Accept:application/json' -H "Authorization:Bearer $asocToken" \
+            > diag/scans.json
+
+          echo "=== Scansioni trovate (campi chiave) ==="
+          jq '.Items[]? | {Id, Name, Technology, AppScanTech, Method, Technologies}' diag/scans.json || cat diag/scans.json
+
+          # Estrazione best-effort: prova piu nomi di campo per la tecnologia.
+          sast_id=$(jq -r '[.Items[]? | select(((.Technology // .AppScanTech // .Method // "") | ascii_downcase) | test("sast|static"))][0].Id // empty' diag/scans.json)
+          sca_id=$(jq -r '[.Items[]?  | select(((.Technology // .AppScanTech // .Method // "") | ascii_downcase) | test("sca|composition|open"))][0].Id // empty' diag/scans.json)
+
+          echo "SAST scan id: ${sast_id:-<non identificato>}"
+          echo "SCA  scan id: ${sca_id:-<non identificato>}"
+          echo "sast_id=$sast_id" >> "$GITHUB_OUTPUT"
+          echo "sca_id=$sca_id"  >> "$GITHUB_OUTPUT"
+
+          # Dump diagnostico di un campione di issue SCA (endpoint tentativo: da confermare).
+          # Serve a leggere i nomi reali dei campi (pacchetto, versione, CVE, severita)
+          # su cui scriveremo il convertitore JSON->SARIF in T2b. Non fatale.
+          if [ -n "$sca_id" ]; then
+            echo "=== Tentativo fetch issue SCA (diagnostico) ==="
+            code=$(curl -k -s -o diag/sca-issues.json -w '%{http_code}' -X GET \
+              "https://${SERVICE_URL}/api/v4/Issues/Scan/${sca_id}" \
+              -H 'Accept:application/json' -H "Authorization:Bearer $asocToken" || true)
+            echo "HTTP $code da /api/v4/Issues/Scan/{scaId}"
+            echo "Prime righe della risposta:"
+            head -c 1200 diag/sca-issues.json || true
+            echo ""
+          fi
+
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
+            -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
+
+      # ------------------------------------------------------------------
+      # 3) SAST -> SARIF nativo -> Code scanning (flusso gia collaudato in T1)
+      # ------------------------------------------------------------------
+      - name: Get SAST SARIF report
+        id: sarif
+        if: steps.discover.outputs.sast_id != ''
+        env:
+          ASOC_KEY: ${{ secrets.ASOC_KEY }}
+          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+        run: |
+          set -euo pipefail
+          scanId="${{ steps.discover.outputs.sast_id }}"
+
+          asocToken=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
+            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
+            | grep -oP '(?<="Token":\ ")[^"]*')
+          [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
+
+          reportId=$(curl -k -s -X POST \
+            --header 'Content-Type:application/json' --header 'Accept:application/json' \
+            --header "Authorization:Bearer $asocToken" \
+            -d '{"Configuration":{"Summary":true,"Details":true,"Discussion":true,"Overview":true,"TableOfContent":true,"Articles":true,"History":true,"Coverage":true,"MinimizeDetails":true,"ReportFileType":"SARIF","Title":"","Notes":"","Locale":"en"},"OdataFilter":"","ApplyPolicies":"None"}' \
+            "https://${SERVICE_URL}/api/v4/Reports/Security/Scan/$scanId" \
+            | grep -oP '(?<="Id":\ ")[^"]*')
+          [ -n "$reportId" ] || { echo "::error::Creazione report SARIF fallita (piano Free?)."; exit 1; }
+
+          while true; do
+            reportStatus=$(curl -k -s -X GET --header 'Accept:text/xml' \
+              --header "Authorization:Bearer $asocToken" \
+              "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" \
+              | grep -oP '(?<="Message":\ ")[^"]*' || true)
+            [ "$reportStatus" = "Report is not available" ] && { echo "SARIF in generazione..."; sleep 30; } || { echo "SARIF pronto."; break; }
+          done
+
+          mkdir -p sarif
+          curl -k -s -X GET --header "Authorization:Bearer $asocToken" \
+            "https://${SERVICE_URL}/api/v4/Reports/$reportId/Download" -o "sarif/appscan-sast.raw.sarif"
+
+          if ! jq -e '.version and .runs' sarif/appscan-sast.raw.sarif >/dev/null 2>&1; then
+            echo "::error::Il file scaricato non sembra un SARIF valido."; head -c 500 sarif/appscan-sast.raw.sarif || true; exit 1
+          fi
+
+          # Normalizzazione: rimuove BOM (via jq) e il campo guid non-RFC4122 dai result.
+          jq 'del(.runs[].results[]?.guid)' sarif/appscan-sast.raw.sarif > sarif/appscan-sast.sarif
+          rm -f sarif/appscan-sast.raw.sarif
+          echo "sarif_path=sarif/appscan-sast.sarif" >> "$GITHUB_OUTPUT"
+
+          curl -k -s -X GET "https://${SERVICE_URL}/api/v4/Account/Logout" \
+            -H 'accept: */*' -H "Authorization: Bearer $asocToken" >/dev/null || true
+
+      - name: Upload SAST SARIF to Code scanning
+        if: steps.sarif.outputs.sarif_path != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ steps.sarif.outputs.sarif_path }}
+          category: appscan-sast
+
+      # ------------------------------------------------------------------
+      # 4) Artefatto diagnostico: lista scansioni + campione issue SCA + SARIF
+      #    (e' la base per scrivere il convertitore SCA in T2b)
+      # ------------------------------------------------------------------
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appscan-t2-diagnostics
+          path: |
+            diag/
+            sarif/
