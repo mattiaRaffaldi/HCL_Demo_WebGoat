@@ -25,7 +25,7 @@ jobs:
       # ------------------------------------------------------------------
       # 1) LANCIO via action ufficiale: esegue SAST + SCA insieme.
       #    Invocazione allineata al main.yml funzionante:
-      #    - versione v1.0.7 (la v1.0.8 usciva a vuoto in pochi secondi)
+      #    - versione v1.0.9 (ultima rilasciata e funzionante; la v1.0.8 usciva a vuoto)
       #    - niente scan_build_outputs: si scansiona il sorgente
       #    - wait_for_analysis: aspetta che l'analisi finisca
       #    Il security gate (fail_for_noncompliance) e' OFF per default.
@@ -143,8 +143,16 @@ jobs:
             echo "::error::Il file scaricato non sembra un SARIF valido."; head -c 500 sarif/appscan-sast.raw.sarif || true; exit 1
           fi
 
-          # Normalizzazione: rimuove BOM (via jq) e il campo guid non-RFC4122 dai result.
-          jq 'del(.runs[].results[]?.guid)' sarif/appscan-sast.raw.sarif > sarif/appscan-sast.sarif
+          # Normalizzazione del SARIF per GitHub:
+          #  1) rimuove eventuale BOM (via jq) e il campo guid non-RFC4122 dai result;
+          #  2) gli URI in artifacts[] sono assoluti "file:///src/main/..." -> GitHub
+          #     non li mappa al repo. Togliendo "file:///" diventano relativi alla root
+          #     ("src/main/...") e gli alert si agganciano al codice. I result puntano
+          #     agli artifacts per index, quindi basta correggere la tabella artifacts.
+          jq '
+            del(.runs[].results[]?.guid)
+            | (.runs[]?.artifacts[]?.location.uri) |= (if type=="string" then sub("^file:///"; "") else . end)
+          ' sarif/appscan-sast.raw.sarif > sarif/appscan-sast.sarif
           rm -f sarif/appscan-sast.raw.sarif
           echo "sarif_path=sarif/appscan-sast.sarif" >> "$GITHUB_OUTPUT"
 
