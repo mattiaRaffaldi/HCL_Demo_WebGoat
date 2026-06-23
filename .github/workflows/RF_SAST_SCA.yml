@@ -17,7 +17,7 @@ jobs:
        - name: Checkout
          uses: actions/checkout@v4
        - name: Run AppScan SAST scan
-         uses: HCL-TECH-SOFTWARE/appscan-sast-action@v1.0.9
+         uses: HCL-TECH-SOFTWARE/appscan-sast-action@main
          with:
            asoc_key: ${{ secrets.ASOC_KEY_RAPIDFIX }}
            asoc_secret: ${{ secrets.ASOC_SECRET_RAPIDFIX }}
