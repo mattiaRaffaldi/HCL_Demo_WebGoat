@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.util.HtmlUtils;
 
 @RestController
 @Slf4j
@@ -37,7 +38,7 @@ public class Assignment5 implements AssignmentEndpoint {
       return failed(this).feedback("required4").build();
     }
     if (!"Larry".equals(username_login)) {
-      return failed(this).feedback("user.not.larry").feedbackArgs(username_login).build();
+      return failed(this).feedback("user.not.larry").feedbackArgs(HtmlUtils.htmlEscape(username_login)).build();
     }
     try (var connection = dataSource.getConnection()) {
       PreparedStatement statement =
