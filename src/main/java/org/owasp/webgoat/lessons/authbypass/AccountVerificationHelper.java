@@ -4,6 +4,8 @@
  */
 package org.owasp.webgoat.lessons.authbypass;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -29,6 +31,16 @@ public class AccountVerificationHelper {
 
   // this is to aid feedback in the attack process and is not intended to be part of the
   // 'vulnerable' code
+  private static boolean constantTimeEquals(String submittedAnswer, String expectedAnswer) {
+    if (submittedAnswer == null || expectedAnswer == null) {
+      return false;
+    }
+
+    return MessageDigest.isEqual(
+        submittedAnswer.getBytes(StandardCharsets.UTF_8),
+        expectedAnswer.getBytes(StandardCharsets.UTF_8));
+  }
+
   public boolean didUserLikelylCheat(HashMap<String, String> submittedAnswers) {
     boolean likely = false;
 
@@ -36,18 +48,17 @@ public class AccountVerificationHelper {
       likely = true;
     }
 
-    if ((submittedAnswers.containsKey("secQuestion0")
-            && submittedAnswers
-                .get("secQuestion0")
-                .equals(secQuestionStore.get(verifyUserId).get("secQuestion0")))
-        && (submittedAnswers.containsKey("secQuestion1")
-            && submittedAnswers
-                .get("secQuestion1")
-                .equals(secQuestionStore.get(verifyUserId).get("secQuestion1")))) {
-      likely = true;
-    } else {
-      likely = false;
-    }
+    String expectedSecQuestion0 = (String) secQuestionStore.get(verifyUserId).get("secQuestion0");
+    String expectedSecQuestion1 = (String) secQuestionStore.get(verifyUserId).get("secQuestion1");
+
+    boolean secQuestion0Matches =
+        submittedAnswers.containsKey("secQuestion0")
+            && constantTimeEquals(submittedAnswers.get("secQuestion0"), expectedSecQuestion0);
+    boolean secQuestion1Matches =
+        submittedAnswers.containsKey("secQuestion1")
+            && constantTimeEquals(submittedAnswers.get("secQuestion1"), expectedSecQuestion1);
+
+    likely = secQuestion0Matches && secQuestion1Matches;
 
     return likely;
   }
@@ -56,25 +67,18 @@ public class AccountVerificationHelper {
 
   public boolean verifyAccount(Integer userId, HashMap<String, String> submittedQuestions) {
     // short circuit if no questions are submitted
-    if (submittedQuestions.entrySet().size() != secQuestionStore.get(verifyUserId).size()) {
-      return false;
-    }
+    boolean sizeMatches = submittedQuestions.entrySet().size() == secQuestionStore.get(verifyUserId).size();
+    String expectedSecQuestion0 = (String) secQuestionStore.get(verifyUserId).get("secQuestion0");
+    String expectedSecQuestion1 = (String) secQuestionStore.get(verifyUserId).get("secQuestion1");
 
-    if (submittedQuestions.containsKey("secQuestion0")
-        && !submittedQuestions
-            .get("secQuestion0")
-            .equals(secQuestionStore.get(verifyUserId).get("secQuestion0"))) {
-      return false;
-    }
-
-    if (submittedQuestions.containsKey("secQuestion1")
-        && !submittedQuestions
-            .get("secQuestion1")
-            .equals(secQuestionStore.get(verifyUserId).get("secQuestion1"))) {
-      return false;
-    }
+    boolean secQuestion0Matches =
+        submittedQuestions.containsKey("secQuestion0")
+            && constantTimeEquals(submittedQuestions.get("secQuestion0"), expectedSecQuestion0);
+    boolean secQuestion1Matches =
+        submittedQuestions.containsKey("secQuestion1")
+            && constantTimeEquals(submittedQuestions.get("secQuestion1"), expectedSecQuestion1);
 
     // else
-    return true;
+    return sizeMatches && secQuestion0Matches && secQuestion1Matches;
   }
 }
