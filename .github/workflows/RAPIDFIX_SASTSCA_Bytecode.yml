@@ -1,7 +1,7 @@
 name: "Rapidfix - bytecode analysis"
 on:
   push:
-  branches: [ main ]
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
