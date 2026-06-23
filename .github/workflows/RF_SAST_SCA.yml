@@ -1,8 +1,8 @@
 name: "RAPIDFIX_SAST_SCA-source code"
 
 on:
-  push:
-    branches: [main]
+  #push:
+  #  branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -21,7 +21,7 @@ jobs:
            asoc_secret: ${{ secrets.ASOC_SECRET_RAPIDFIX }}
            application_id: ${{ vars.ASOC_APPID_RAPIDFIX }}
            wait_for_analysis: true
-           scan_name: "Source Code Scan - ${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
+           scan_name: "Github Scan - ${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
 
   dast:
     if: false
