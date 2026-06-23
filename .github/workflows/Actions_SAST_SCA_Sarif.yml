@@ -1,8 +1,8 @@
 name: "HCL AppScan SAST+SCA -> Code Scanning (T2)"
 
 on:
-  push:
-    branches: [ main ]
+  #push:
+  #  branches: [ main ]
   workflow_dispatch:
 
 permissions:
