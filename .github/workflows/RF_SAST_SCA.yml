@@ -3,6 +3,8 @@ name: "RAPIDFIX_SAST_SCA"
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -21,6 +23,7 @@ jobs:
            asoc_secret: ${{ secrets.ASOC_SECRET_RAPIDFIX }}
            application_id: ${{ vars.ASOC_APPID_RAPIDFIX }}
            wait_for_analysis: true
+           incremental_scan: ${{ github.event_name == 'pull_request' }}
            scan_name: "Github Scan - ${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
 
   dast:
