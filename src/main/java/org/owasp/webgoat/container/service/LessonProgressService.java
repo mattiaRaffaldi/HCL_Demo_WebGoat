@@ -17,6 +17,7 @@ import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.util.HtmlUtils;
 
 @Controller
 @RequiredArgsConstructor
@@ -40,8 +41,18 @@ public class LessonProgressService {
 
     var lessonProgress = userProgress.getLessonProgress(lesson);
     return lessonProgress.getLessonOverview().entrySet().stream()
-        .map(entry -> new LessonOverview(entry.getKey().getAssignment(), entry.getValue()))
+        .map(
+            entry ->
+                new LessonOverview(
+                    escapeAssignment(entry.getKey().getAssignment()), entry.getValue()))
         .toList();
+  }
+
+  private static Assignment escapeAssignment(Assignment assignment) {
+    return new Assignment(
+        HtmlUtils.htmlEscape(assignment.getName()),
+        HtmlUtils.htmlEscape(assignment.getPath()),
+        assignment.getHints().stream().map(HtmlUtils::htmlEscape).toList());
   }
 
   @AllArgsConstructor
