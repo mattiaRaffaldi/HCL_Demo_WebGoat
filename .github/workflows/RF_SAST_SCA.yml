@@ -1,0 +1,48 @@
+name: "RAPIDFIX_SAST_SCA-source code"
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sast_sca:
+    runs-on: ubuntu-latest
+    steps:
+       - name: Checkout
+         uses: actions/checkout@v4
+       - name: Run AppScan SAST scan
+         uses: HCL-TECH-SOFTWARE/appscan-sast-action@v1.0.9
+         with:
+           asoc_key: ${{ secrets.ASOC_KEY_RAPIDFIX }}
+           asoc_secret: ${{ secrets.ASOC_SECRET_RAPIDFIX }}
+           application_id: ${{ vars.ASOC_APPID_RAPIDFIX }}
+           wait_for_analysis: true
+           scan_name: "Source Code Scan - ${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
+
+  dast:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: HCL AppScan DAST Analyzer
+        uses: HCL-TECH-SOFTWARE/appscan-dast-action@v1.0.7
+        with:
+          # Required
+          asoc_key: ${{ secrets.ASOC_KEY }}
+          asoc_secret: ${{ secrets.ASOC_SECRET }}
+          application_id: ${{ vars.ASOC_APPID }}
+          dynamic_scan_type: dast
+          starting_URL: 'http://172.16.28.128:8080/WebGoat/'
+          scan_name: "DAST Scan - http://172.16.28.128:8080/WebGoat/_${{ github.ref_name }}"
+
+          # For local/private targets
+          network: private
+          presence_id: ${{ secrets.ASOC_PRESENCE_ID }}
+
+          # Only needed if auth is required by target app
+          login_method: userpass
+          login_user: ${{ secrets.DAST_LOGIN_USER }}
+          login_password: ${{ secrets.DAST_LOGIN_PASSWORD }}
