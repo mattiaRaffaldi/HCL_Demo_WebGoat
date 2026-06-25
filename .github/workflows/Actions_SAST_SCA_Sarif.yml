@@ -135,9 +135,78 @@ jobs:
           #     non li mappa al repo. Togliendo "file:///" diventano relativi alla root
           #     ("src/main/...") e gli alert si agganciano al codice. I result puntano
           #     agli artifacts per index, quindi basta correggere la tabella artifacts.
-          jq '
+                    jq '
+            # Mappa severità testuale -> level SARIF (GitHub alert level)
+            def to_level($s):
+              ($s // "" | ascii_downcase) as $x
+              | if ($x=="critical" or $x=="high") then "error"
+                elif ($x=="medium") then "warning"
+                elif ($x=="low" or $x=="info" or $x=="informational" or $x=="information") then "note"
+                else "warning"
+                end;
+
+            # Mappa severità testuale -> security-severity numerica (GitHub security ranking)
+            def to_secsev($s):
+              ($s // "" | ascii_downcase) as $x
+              | if $x=="critical" then "9.8"
+                elif $x=="high" then "8.0"
+                elif $x=="medium" then "5.0"
+                elif ($x=="low" or $x=="info" or $x=="informational" or $x=="information") then "2.0"
+                else "0.0"
+                end;
+
+            # Recupera severità da campi possibili (result-level o rule-level, standard o vendor)
+            def pick_sev($r; $rule):
+              (
+                $r.properties.severity
+                // $r.properties.Severity
+                // $r.level
+                // $rule.properties.severity
+                // $rule.properties.Severity
+                // $rule.defaultConfiguration.level
+                // ""
+              );
+
+            # 0) fix preesistenti necessari
             del(.runs[].results[]?.guid)
             | (.runs[]?.artifacts[]?.location.uri) |= (if type=="string" then sub("^file:///"; "") else . end)
+
+            # 1) per ogni run: prepara indice regole per ruleId
+            | .runs |= map(
+                . as $run
+                | ($run.tool.driver.rules // []) as $rules
+                | ($rules | map({key: .id, value: .}) | from_entries) as $rule_by_id
+
+                # 2) riscrive results[].level usando severità AppScan quando disponibile
+                | .results = (
+                    (.results // []) | map(
+                      . as $r
+                      | ($rule_by_id[($r.ruleId // "")] // {}) as $rule
+                      | (pick_sev($r; $rule)) as $sev
+                      | .level = to_level($sev)
+                    )
+                  )
+
+                # 3) arricchisce rules[] con security-severity + tag security (senza perdere campi esistenti)
+                | .tool.driver.rules = (
+                    $rules | map(
+                      . as $rule
+                      | (
+                          $rule.properties.severity
+                          // $rule.properties.Severity
+                          // $rule.defaultConfiguration.level
+                          // ""
+                        ) as $sev
+                      | .properties = ((.properties // {})
+                          + {"security-severity": ((.properties["security-severity"] // to_secsev($sev)) | tostring)}
+                          + {"tags": (
+                              ((.properties.tags // []) + ["security"])
+                              | unique
+                            )}
+                        )
+                    )
+                  )
+              )
           ' sarif/appscan-sast.raw.sarif > sarif/appscan-sast.sarif
           rm -f sarif/appscan-sast.raw.sarif
           echo "sarif_path=sarif/appscan-sast.sarif" >> "$GITHUB_OUTPUT"
