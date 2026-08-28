@@ -8,27 +8,33 @@ import static com.microsoft.playwright.assertions.PlaywrightAssertions.assertTha
 
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.Page;
-import org.jose4j.jws.AlgorithmIdentifiers;
-import org.junit.jupiter.api.Test;
-import org.owasp.webgoat.playwright.webgoat.PlaywrightTest;
-import org.owasp.webgoat.playwright.webgoat.helpers.Authentication;
-
 import com.microsoft.playwright.options.AriaRole;
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import org.jose4j.jwk.JsonWebKey.OutputControlLevel;
 import org.jose4j.jwk.JsonWebKeySet;
 import org.jose4j.jwk.RsaJsonWebKey;
 import org.jose4j.jwk.RsaJwkGenerator;
+import org.jose4j.jws.AlgorithmIdentifiers;
 import org.jose4j.jws.JsonWebSignature;
+import org.jose4j.keys.HmacKey;
 import org.jose4j.lang.JoseException;
+import org.junit.jupiter.api.Test;
+import org.owasp.webgoat.playwright.webgoat.PlaywrightTest;
+import org.owasp.webgoat.playwright.webgoat.helpers.Authentication;
 
 class JwtUITest extends PlaywrightTest {
 
   @Test
-  void shouldDecodeJwt(Browser browser) {
+  void shouldDecodeJwt(Browser browser) throws JoseException {
     var page = Authentication.sylvester(browser);
-    var secretKey = "test";
-    var jwt =
-        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    var secretKey = UUID.randomUUID().toString();
+    JsonWebSignature jws = new JsonWebSignature();
+    jws.setPayload("{\"sub\":\"1234567890\",\"name\":\"John Doe\",\"iat\":1516239022}");
+    jws.setAlgorithmHeaderValue(AlgorithmIdentifiers.HMAC_SHA256);
+    jws.setHeader("typ", "JWT");
+    jws.setKey(new HmacKey(secretKey.getBytes(StandardCharsets.UTF_8)));
+    var jwt = jws.getCompactSerialization();
 
     page.navigate(webWolfURL("jwt"));
     page.getByPlaceholder("Enter your secret key").fill(secretKey);
