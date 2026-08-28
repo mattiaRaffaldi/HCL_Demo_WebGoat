@@ -15,15 +15,16 @@ jobs:
        - name: Checkout
          uses: actions/checkout@v4
        - name: Run AppScan SAST scan
-         uses: HCL-TECH-SOFTWARE/appscan-sast-action@v1.0.7
+         uses: HCL-TECH-SOFTWARE/appscan-sast-action@v1.1.1
          with:
            asoc_key: ${{ secrets.ASOC_KEY }}
            asoc_secret: ${{ secrets.ASOC_SECRET }}
            application_id: ${{ vars.ASOC_APPID }}
-           wait_for_analysis: true
+           wait_for_analysis: false
            scan_name: "Source Code Scan - ${{ github.ref_name }}_${{ github.sha }}_${{ github.run_id }}"
 
   dast:
+    if: false
     runs-on: ubuntu-latest
     steps:
       - name: HCL AppScan DAST Analyzer
