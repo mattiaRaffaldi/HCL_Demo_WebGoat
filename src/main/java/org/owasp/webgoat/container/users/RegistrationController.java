@@ -33,6 +33,12 @@ public class RegistrationController {
     return "registration";
   }
 
+  /**
+   * Creates the new user and logs the browser in as that user. As this changes the authenticated
+   * identity of the browser it may only be called from WebGoat itself, otherwise another site can
+   * silently log a visitor into an account the attacker knows the credentials of (login CSRF).
+   * CSRF protection for this endpoint is configured in {@code WebSecurityConfig}.
+   */
   @PostMapping("/register.mvc")
   public String registration(
       @ModelAttribute("userForm") @Valid UserForm userForm,

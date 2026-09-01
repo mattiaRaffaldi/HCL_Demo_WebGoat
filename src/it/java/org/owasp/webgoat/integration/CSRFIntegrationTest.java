@@ -274,14 +274,6 @@ public class CSRFIntegrationTest extends IntegrationTest {
 
   /** Try to register the new user. Ignore the result. */
   private void registerCSRFUser() {
-
-      RestAssured.given()
-        .when()
-        .relaxedHTTPSValidation()
-        .formParam("username", "csrf-" + this.getUser())
-        .formParam("password", "password")
-        .formParam("matchingPassword", "password")
-        .formParam("agree", "agree")
-        .post(webGoatUrlConfig.url("register.mvc"));
+    registerUser("csrf-" + this.getUser(), "password");
   }
 }

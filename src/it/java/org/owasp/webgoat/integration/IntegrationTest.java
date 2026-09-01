@@ -9,7 +9,10 @@ import static io.restassured.RestAssured.given;
 import io.restassured.RestAssured;
 import io.restassured.filter.log.LogDetail;
 import io.restassured.http.ContentType;
+import io.restassured.response.Response;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import lombok.Getter;
 import org.hamcrest.CoreMatchers;
 import org.hamcrest.MatcherAssert;
@@ -19,6 +22,9 @@ import org.owasp.webgoat.ServerUrlConfig;
 import org.springframework.http.HttpStatus;
 
 public abstract class IntegrationTest {
+
+  private static final Pattern CSRF_TOKEN =
+      Pattern.compile("name=\"_csrf\"[^>]*value=\"([^\"]*)\"");
 
   protected final ServerUrlConfig webGoatUrlConfig = ServerUrlConfig.webGoat();
   protected final ServerUrlConfig webWolfUrlConfig = ServerUrlConfig.webWolf();
@@ -49,14 +55,7 @@ public abstract class IntegrationTest {
             .header("Location");
     if (location.endsWith("?error")) {
       webGoatCookie =
-          RestAssured.given()
-              .when()
-              .relaxedHTTPSValidation()
-              .formParam("username", user)
-              .formParam("password", "password")
-              .formParam("matchingPassword", "password")
-              .formParam("agree", "agree")
-              .post(webGoatUrlConfig.url("register.mvc"))
+          registerUser(user, "password")
               .then()
               .cookie("JSESSIONID")
               .statusCode(302)
@@ -89,6 +88,46 @@ public abstract class IntegrationTest {
             .cookie("WEBWOLFSESSION")
             .extract()
             .cookie("WEBWOLFSESSION");
+  }
+
+  /**
+   * Registers a new user the same way a browser does: first fetch the registration page to obtain a
+   * CSRF token (registration is protected against CSRF as it logs the browser in as the new user)
+   * and post the form with that token and the session it belongs to.
+   */
+  protected Response registerUser(String username, String password) {
+    Response registrationPage =
+        RestAssured.given()
+            .when()
+            .relaxedHTTPSValidation()
+            .get(webGoatUrlConfig.url("registration"))
+            .then()
+            .statusCode(200)
+            .cookie("JSESSIONID")
+            .extract()
+            .response();
+
+    return RestAssured.given()
+        .when()
+        .relaxedHTTPSValidation()
+        .cookie("JSESSIONID", registrationPage.cookie("JSESSIONID"))
+        .formParam("username", username)
+        .formParam("password", password)
+        .formParam("matchingPassword", password)
+        .formParam("agree", "agree")
+        .formParam("_csrf", csrfToken(registrationPage.getBody().asString()))
+        .post(webGoatUrlConfig.url("register.mvc"))
+        .then()
+        .extract()
+        .response();
+  }
+
+  private static String csrfToken(String registrationPage) {
+    Matcher matcher = CSRF_TOKEN.matcher(registrationPage);
+    if (!matcher.find()) {
+      throw new IllegalStateException("No CSRF token found on the registration page");
+    }
+    return matcher.group(1);
   }
 
   @AfterEach
