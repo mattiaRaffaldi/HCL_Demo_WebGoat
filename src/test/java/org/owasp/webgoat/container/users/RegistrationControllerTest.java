@@ -13,7 +13,7 @@ import static org.springframework.security.test.web.servlet.setup.SecurityMockMv
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrlPattern;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.Locale;
@@ -76,7 +76,9 @@ class RegistrationControllerTest {
   void registrationLogsTheNewUserIn() throws Exception {
     registerFromRegistrationPage("new-user-1")
         .andExpect(status().is3xxRedirection())
-        .andExpect(redirectedUrl("/attack"))
+        // UserInterceptor adds the username to the model of every view, which RedirectView
+        // appends to the redirect as a query parameter
+        .andExpect(redirectedUrlPattern("/attack*"))
         .andExpect(authenticated().withUsername("new-user-1"));
 
     assertThat(userRepository.existsByUsername("new-user-1")).isTrue();

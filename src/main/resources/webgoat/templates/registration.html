@@ -27,7 +27,9 @@
                       method='POST'>
 
                     <!-- Registration logs the browser in as the new user, so it must not be
-                         possible to submit this form from another site (login CSRF) -->
+                         possible to submit this form from another site (login CSRF). Thymeleaf
+                         adds this token to a th:action form by itself, it is spelled out here so
+                         the form does not depend on that to be submittable. -->
                     <input type="hidden" th:if="${_csrf != null}" th:name="${_csrf.parameterName}" th:value="${_csrf.token}"/>
 
                     <div class="form-group" th:classappend="${#fields.hasErrors('username')}? 'has-error'">
