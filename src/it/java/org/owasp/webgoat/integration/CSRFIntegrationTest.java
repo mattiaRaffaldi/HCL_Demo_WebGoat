@@ -272,7 +272,7 @@ public class CSRFIntegrationTest extends IntegrationTest {
     boolean solved;
   }
 
-  /** Try to register the new user. Ignore the result. */
+  /** Try to register the new user. Ignore the result, the user may already exist. */
   private void registerCSRFUser() {
     registerUser("csrf-" + this.getUser(), "password");
   }

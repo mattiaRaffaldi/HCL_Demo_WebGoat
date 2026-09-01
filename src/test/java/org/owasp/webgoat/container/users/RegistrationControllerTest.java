@@ -17,7 +17,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.Locale;
-import java.util.regex.Pattern;
+import org.jsoup.Jsoup;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -47,9 +47,6 @@ import org.springframework.web.context.WebApplicationContext;
       "classpath:/application-webgoat-test.properties"
     })
 class RegistrationControllerTest {
-
-  private static final Pattern CSRF_TOKEN =
-      Pattern.compile("name=\"_csrf\"[^>]*value=\"([^\"]*)\"");
 
   @Autowired private WebApplicationContext wac;
   @Autowired private UserRepository userRepository;
@@ -97,6 +94,21 @@ class RegistrationControllerTest {
   }
 
   @Test
+  @DisplayName("A token which belongs to another session is rejected")
+  void registrationWithTokenOfAnotherSessionIsRejected() throws Exception {
+    var tokenOfAnotherSession = csrfToken(openRegistrationPage());
+    var ownSession = (MockHttpSession) openRegistrationPage().getRequest().getSession(false);
+
+    mockMvc
+        .perform(
+            registration("new-user-4").session(ownSession).param("_csrf", tokenOfAnotherSession))
+        .andExpect(status().isForbidden())
+        .andExpect(unauthenticated());
+
+    assertThat(userRepository.existsByUsername("new-user-4")).isFalse();
+  }
+
+  @Test
   @DisplayName("A form submitted from another site does not change who the victim is logged in as")
   void crossSiteRegistrationDoesNotReplaceTheSessionOfTheVictim() throws Exception {
     var victim =
@@ -119,15 +131,24 @@ class RegistrationControllerTest {
 
   /** Registers a user the way a browser does: read the token from the form and post it back. */
   private ResultActions registerFromRegistrationPage(String username) throws Exception {
-    MvcResult registrationPage =
-        mockMvc.perform(get("/registration")).andExpect(status().isOk()).andReturn();
+    var registrationPage = openRegistrationPage();
     var session = (MockHttpSession) registrationPage.getRequest().getSession(false);
     assertThat(session).isNotNull();
 
-    var token = CSRF_TOKEN.matcher(registrationPage.getResponse().getContentAsString());
-    assertThat(token.find()).as("CSRF token on the registration page").isTrue();
+    return mockMvc.perform(
+        registration(username).session(session).param("_csrf", csrfToken(registrationPage)));
+  }
 
-    return mockMvc.perform(registration(username).session(session).param("_csrf", token.group(1)));
+  private MvcResult openRegistrationPage() throws Exception {
+    return mockMvc.perform(get("/registration")).andExpect(status().isOk()).andReturn();
+  }
+
+  private String csrfToken(MvcResult registrationPage) throws Exception {
+    var token =
+        Jsoup.parse(registrationPage.getResponse().getContentAsString())
+            .selectFirst("input[name=_csrf]");
+    assertThat(token).as("CSRF token on the registration page").isNotNull();
+    return token.val();
   }
 
   private MockHttpServletRequestBuilder registration(String username) {

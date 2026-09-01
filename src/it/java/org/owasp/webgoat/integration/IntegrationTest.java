@@ -11,20 +11,16 @@ import io.restassured.filter.log.LogDetail;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import lombok.Getter;
 import org.hamcrest.CoreMatchers;
 import org.hamcrest.MatcherAssert;
+import org.jsoup.Jsoup;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.owasp.webgoat.ServerUrlConfig;
 import org.springframework.http.HttpStatus;
 
 public abstract class IntegrationTest {
-
-  private static final Pattern CSRF_TOKEN =
-      Pattern.compile("name=\"_csrf\"[^>]*value=\"([^\"]*)\"");
 
   protected final ServerUrlConfig webGoatUrlConfig = ServerUrlConfig.webGoat();
   protected final ServerUrlConfig webWolfUrlConfig = ServerUrlConfig.webWolf();
@@ -123,11 +119,11 @@ public abstract class IntegrationTest {
   }
 
   private static String csrfToken(String registrationPage) {
-    Matcher matcher = CSRF_TOKEN.matcher(registrationPage);
-    if (!matcher.find()) {
+    var token = Jsoup.parse(registrationPage).selectFirst("input[name=_csrf]");
+    if (token == null) {
       throw new IllegalStateException("No CSRF token found on the registration page");
     }
-    return matcher.group(1);
+    return token.val();
   }
 
   @AfterEach
