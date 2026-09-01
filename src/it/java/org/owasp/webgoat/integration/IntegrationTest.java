@@ -9,10 +9,12 @@ import static io.restassured.RestAssured.given;
 import io.restassured.RestAssured;
 import io.restassured.filter.log.LogDetail;
 import io.restassured.http.ContentType;
+import io.restassured.response.Response;
 import java.util.Map;
 import lombok.Getter;
 import org.hamcrest.CoreMatchers;
 import org.hamcrest.MatcherAssert;
+import org.jsoup.Jsoup;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.owasp.webgoat.ServerUrlConfig;
@@ -49,14 +51,7 @@ public abstract class IntegrationTest {
             .header("Location");
     if (location.endsWith("?error")) {
       webGoatCookie =
-          RestAssured.given()
-              .when()
-              .relaxedHTTPSValidation()
-              .formParam("username", user)
-              .formParam("password", "password")
-              .formParam("matchingPassword", "password")
-              .formParam("agree", "agree")
-              .post(webGoatUrlConfig.url("register.mvc"))
+          registerUser(user, "password")
               .then()
               .cookie("JSESSIONID")
               .statusCode(302)
@@ -89,6 +84,46 @@ public abstract class IntegrationTest {
             .cookie("WEBWOLFSESSION")
             .extract()
             .cookie("WEBWOLFSESSION");
+  }
+
+  /**
+   * Registers a new user the same way a browser does: first fetch the registration page to obtain a
+   * CSRF token (registration is protected against CSRF as it logs the browser in as the new user)
+   * and post the form with that token and the session it belongs to.
+   */
+  protected Response registerUser(String username, String password) {
+    Response registrationPage =
+        RestAssured.given()
+            .when()
+            .relaxedHTTPSValidation()
+            .get(webGoatUrlConfig.url("registration"))
+            .then()
+            .statusCode(200)
+            .cookie("JSESSIONID")
+            .extract()
+            .response();
+
+    return RestAssured.given()
+        .when()
+        .relaxedHTTPSValidation()
+        .cookie("JSESSIONID", registrationPage.cookie("JSESSIONID"))
+        .formParam("username", username)
+        .formParam("password", password)
+        .formParam("matchingPassword", password)
+        .formParam("agree", "agree")
+        .formParam("_csrf", csrfToken(registrationPage.getBody().asString()))
+        .post(webGoatUrlConfig.url("register.mvc"))
+        .then()
+        .extract()
+        .response();
+  }
+
+  private static String csrfToken(String registrationPage) {
+    var token = Jsoup.parse(registrationPage).selectFirst("input[name=_csrf]");
+    if (token == null) {
+      throw new IllegalStateException("No CSRF token found on the registration page");
+    }
+    return token.val();
   }
 
   @AfterEach
