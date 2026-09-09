@@ -21,6 +21,8 @@ define([
             var data = (options.data || {});
             if(this.enabled != undefined) {
             	options.data = { enabled: !this.enabled };
+                options.type = 'POST';
+                options.method = 'POST';
             }
             return Backbone.Collection.prototype.fetch.call(this, options);
 		},
