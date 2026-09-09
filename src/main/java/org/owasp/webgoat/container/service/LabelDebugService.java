@@ -12,6 +12,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
@@ -45,7 +46,7 @@ public class LabelDebugService {
    * @param enabled {@link org.owasp.webgoat.container.session.LabelDebugger} object
    * @return a {@link org.springframework.http.ResponseEntity} object.
    */
-  @RequestMapping(
+  @PostMapping(
       value = URL_DEBUG_LABELS_MVC,
       produces = MediaType.APPLICATION_JSON_VALUE,
       params = KEY_ENABLED)

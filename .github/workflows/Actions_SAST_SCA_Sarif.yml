@@ -47,17 +47,13 @@ jobs:
       - name: Discover scan IDs + diagnostics
         id: discover
         env:
-          ASOC_KEY: ${{ secrets.ASOC_KEY }}
-          ASOC_SECRET: ${{ secrets.ASOC_SECRET }}
+          ASOC_TOKEN: ${{ secrets.ASOC_TOKEN }}
+          # TODO(developer): Provision and rotate this token outside the repository.
         run: |
           set -euo pipefail
           mkdir -p diag
 
-          asocToken=$(curl -k -s -X POST \
-            --header 'Content-Type:application/json' --header 'Accept:application/json' \
-            -d '{"KeyId":"'"$ASOC_KEY"'","KeySecret":"'"$ASOC_SECRET"'"}' \
-            "https://${SERVICE_URL}/api/v4/Account/ApiKeyLogin" \
-            | grep -oP '(?<="Token":\ ")[^"]*')
+          asocToken="$ASOC_TOKEN"
           [ -n "$asocToken" ] || { echo "::error::Token vuoto."; exit 1; }
 
           # --- Recupero MIRATO: solo le scansioni di QUESTO run ---
