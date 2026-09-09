@@ -68,13 +68,22 @@ var html = '<li class="comment">' +
     '</div>' +
     '</li>';
 
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function getComments(field) {
     $.get("xxe/comments", function (result, status) {
         $(field).empty();
         for (var i = 0; i < result.length; i++) {
-            var comment = html.replace('USER', result[i].user);
-            comment = comment.replace('DATETIME', result[i].dateTime);
-            comment = comment.replace('COMMENT', result[i].text);
+            var comment = html.replace('USER', escapeHtml(result[i].user));
+            comment = comment.replace('DATETIME', escapeHtml(result[i].dateTime));
+            comment = comment.replace('COMMENT', escapeHtml(result[i].text));
             $(field).append(comment);
         }
 
