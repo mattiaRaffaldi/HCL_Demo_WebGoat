@@ -7,6 +7,8 @@ package org.owasp.webgoat.container.users;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Transient;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Collection;
 import java.util.Collections;
 import lombok.Getter;
@@ -80,11 +82,25 @@ public class WebGoatUser implements UserDetails {
     return this.user.isEnabled();
   }
 
+  @Override
   public boolean equals(Object obj) {
-    return obj instanceof WebGoatUser webGoatUser && this.user.equals(webGoatUser.user);
+    if (this == obj) {
+      return true;
+    }
+    if (obj == null || getClass() != obj.getClass()) {
+      return false;
+    }
+    WebGoatUser webGoatUser = (WebGoatUser) obj;
+    if (username == null || webGoatUser.username == null) {
+      return false;
+    }
+    return MessageDigest.isEqual(
+        username.getBytes(StandardCharsets.UTF_8),
+        webGoatUser.username.getBytes(StandardCharsets.UTF_8));
   }
 
+  @Override
   public int hashCode() {
-    return user.hashCode();
+    return username != null ? username.hashCode() : 0;
   }
 }
