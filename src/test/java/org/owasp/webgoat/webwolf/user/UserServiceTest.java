@@ -5,7 +5,6 @@
 package org.owasp.webgoat.webwolf.user;
 
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -13,15 +12,18 @@ import static org.mockito.Mockito.when;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.password.PasswordEncoder;
 
 @ExtendWith(MockitoExtension.class)
 public class UserServiceTest {
 
   @Mock private UserRepository mockUserRepository;
+  @Mock private PasswordEncoder passwordEncoder;
 
   @InjectMocks private UserService sut;
 
@@ -52,9 +54,13 @@ public class UserServiceTest {
   public void testAddUser() {
     var username = "guest";
     var password = "guest";
+    when(passwordEncoder.encode(password)).thenReturn("encoded-password");
 
     sut.addUser(username, password);
 
-    verify(mockUserRepository, times(1)).save(any(WebWolfUser.class));
+    ArgumentCaptor<WebWolfUser> captor = ArgumentCaptor.forClass(WebWolfUser.class);
+    verify(mockUserRepository, times(1)).save(captor.capture());
+    Assertions.assertThat(captor.getValue().getUsername()).isEqualTo(username);
+    Assertions.assertThat(captor.getValue().getPassword()).isEqualTo("encoded-password");
   }
 }
